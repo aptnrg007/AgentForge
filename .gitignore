@@ -1,0 +1,3 @@
+/agentforge
+*.db
+.claude/settings.local.json
