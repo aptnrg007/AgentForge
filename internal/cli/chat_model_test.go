@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,6 +61,15 @@ func pressRune(m chatModel, r rune) (chatModel, tea.Cmd) {
 func pressKey(m chatModel, kt tea.KeyType) (chatModel, tea.Cmd) {
 	next, cmd := m.Update(tea.KeyMsg{Type: kt})
 	return next.(chatModel), cmd
+}
+
+func containsSubstring(lines []string, substr string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func typeText(m chatModel, s string) chatModel {
@@ -127,6 +137,9 @@ func TestChatRequireApprovalPausesForYesNo(t *testing.T) {
 	}
 	if executed {
 		t.Fatal("tool must not run before a decision is recorded")
+	}
+	if !containsSubstring(m.transcript, "danger.tool") {
+		t.Fatalf("expected the transcript to show the pending call before it's decided, got %+v", m.transcript)
 	}
 
 	m, cmd = pressRune(m, 'y')

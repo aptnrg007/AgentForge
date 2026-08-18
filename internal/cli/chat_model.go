@@ -188,6 +188,10 @@ func (m chatModel) handlePendingLoaded(msg pendingLoadedMsg) (tea.Model, tea.Cmd
 	}
 	m.pending = msg.pending
 	m.pendingIdx = 0
+	// Flush the tool_use (and any preceding text) that triggered this
+	// pause now, not just at run completion, so the approval prompt
+	// appears with context instead of out of nowhere.
+	m.appendNewMessages()
 	if len(m.pending) == 0 {
 		m.mode = modeStepping
 		return m, m.stepCmd()

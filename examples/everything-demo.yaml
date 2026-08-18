@@ -18,6 +18,10 @@ tools:
   - "everything.echo"
   - "everything.get-sum"
 
+approvals:
+  require:
+    - "everything.get-sum"
+
 limits:
   max_turns: 10
   max_tokens: 1024
