@@ -1,7 +1,7 @@
 // Package cli implements the agentforge command-line interface. Run is a
-// Phase 1 placeholder that hardcodes agent config and drives one run to
-// completion; it's replaced by cobra commands (serve, run, agents, runs)
-// in Phase 5 once YAML config exists.
+// placeholder ahead of the cobra commands (serve, run, agents, runs) that
+// land in Phase 5; for now it loads one agent from a YAML file and drives a
+// single run to completion.
 package cli
 
 import (
@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 
+	"agentforge/internal/config"
 	"agentforge/internal/mcp"
 	"agentforge/internal/message"
 	"agentforge/internal/provider"
@@ -21,15 +22,25 @@ import (
 func Run(args []string) error {
 	fs := flag.NewFlagSet("agentforge", flag.ContinueOnError)
 	dbPath := fs.String("db", "agentforge.db", "path to the SQLite run store")
-	model := fs.String("model", "qwen2.5-coder:14b", "Ollama model name")
-	baseURL := fs.String("base-url", "", "Ollama base URL (default http://localhost:11434)")
-	maxTurns := fs.Int("max-turns", 10, "maximum model turns before the run fails")
-	withMCP := fs.Bool("mcp", false, "also register tools from the @modelcontextprotocol/server-everything reference MCP server")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() < 1 {
-		return fmt.Errorf(`usage: agentforge [flags] "<message>"`)
+	if fs.NArg() < 2 {
+		return fmt.Errorf(`usage: agentforge [flags] <agent.yaml> "<message>"`)
+	}
+	cfgPath, userMessage := fs.Arg(0), fs.Arg(1)
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	var prov provider.Provider
+	switch cfg.Model.Provider {
+	case "ollama":
+		prov = provider.NewOllama(cfg.Model.BaseURL)
+	default:
+		return fmt.Errorf("model.provider %q not yet supported (only ollama through phase 3)", cfg.Model.Provider)
 	}
 
 	st, err := store.Open(*dbPath)
@@ -40,32 +51,42 @@ func Run(args []string) error {
 
 	ctx := context.Background()
 
-	eng := runtime.NewEngine(st, provider.NewOllama(*baseURL), runtime.Config{
-		AgentName:   "demo",
-		Model:       *model,
-		System:      "You are a helpful assistant. Use the echo tool if the user asks you to echo something.",
-		MaxTurns:    *maxTurns,
-		MaxTokens:   1024,
-		Temperature: 0.2,
-	})
-	eng.RegisterTool(runtime.NewEchoTool())
+	maxTurns := cfg.Limits.MaxTurns
+	if maxTurns == 0 {
+		maxTurns = 10
+	}
 
-	if *withMCP {
+	eng := runtime.NewEngine(st, prov, runtime.Config{
+		AgentName:   cfg.Name,
+		Model:       cfg.Model.Name,
+		System:      cfg.Instructions,
+		MaxTurns:    maxTurns,
+		MaxTokens:   cfg.Limits.MaxTokens,
+		Temperature: cfg.Model.Temperature,
+	})
+
+	if len(cfg.MCP) > 0 {
 		registry := mcp.NewRegistry(slog.Default())
 		defer registry.Close()
-		tools, err := registry.Tools(ctx, "everything", mcp.ServerConfig{
-			Command: []string{"npx", "-y", "@modelcontextprotocol/server-everything"},
-		})
-		if err != nil {
-			return fmt.Errorf("connect to MCP server: %w", err)
+
+		var allTools []runtime.Tool
+		for _, srv := range cfg.MCP {
+			if srv.Transport != "stdio" {
+				return fmt.Errorf("mcp server %q: transport %q not yet supported (only stdio through phase 3)", srv.Name, srv.Transport)
+			}
+			tools, err := registry.Tools(ctx, srv.Name, mcp.ServerConfig{Command: srv.Command, Env: srv.Env})
+			if err != nil {
+				return fmt.Errorf("mcp server %q: %w", srv.Name, err)
+			}
+			allTools = append(allTools, tools...)
 		}
-		for _, t := range tools {
+		for _, t := range config.FilterTools(allTools, cfg.Tools) {
 			eng.RegisterTool(t)
 		}
 	}
 
 	runID := fmt.Sprintf("run_%d", os.Getpid())
-	if err := eng.NewRun(ctx, runID, fs.Arg(0)); err != nil {
+	if err := eng.NewRun(ctx, runID, userMessage); err != nil {
 		return err
 	}
 

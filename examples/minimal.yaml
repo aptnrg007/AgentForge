@@ -1,0 +1,13 @@
+name: minimal
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You are a helpful assistant.
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

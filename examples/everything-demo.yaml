@@ -1,0 +1,23 @@
+name: everything-demo
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You are a helpful assistant with access to a couple of demo tools.
+  Use them when the user's request calls for it.
+
+mcp:
+  - name: everything
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+
+tools:
+  - "everything.echo"
+  - "everything.get-sum"
+
+limits:
+  max_turns: 10
+  max_tokens: 1024
