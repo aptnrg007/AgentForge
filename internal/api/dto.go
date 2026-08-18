@@ -28,11 +28,24 @@ type runRequest struct {
 	Message string `json:"message"`
 }
 
+type pendingCall struct {
+	CallID string          `json:"call_id"`
+	Tool   string          `json:"tool"`
+	Args   json.RawMessage `json:"args"`
+}
+
 type runResponse struct {
 	RunID    string            `json:"run_id"`
 	State    string            `json:"state"`
 	Error    *string           `json:"error,omitempty"`
 	Messages []message.Message `json:"messages,omitempty"`
+	Pending  []pendingCall     `json:"pending,omitempty"`
+}
+
+type approveRequest struct {
+	CallID   string `json:"call_id"`
+	Decision string `json:"decision"` // "approved" | "denied"
+	Reason   string `json:"reason,omitempty"`
 }
 
 // toolCallDTO mirrors store.ToolCall for the API surface. Args is typed as

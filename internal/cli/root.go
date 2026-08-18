@@ -20,6 +20,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newRunCmd())
+	root.AddCommand(newChatCmd())
 	root.AddCommand(newAgentsCmd())
 	root.AddCommand(newRunsCmd())
 	return root

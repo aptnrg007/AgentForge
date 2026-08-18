@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"agentforge/internal/message"
 	"agentforge/internal/provider"
@@ -226,4 +227,304 @@ func TestMaxTurnsEnforced(t *testing.T) {
 	if run.Error == nil {
 		t.Fatalf("expected run.Error to describe the max_turns failure")
 	}
+}
+
+// newCountingTool returns a stub tool alongside a pointer to a counter
+// incremented on every Execute call, so tests can assert a denied or
+// not-yet-decided call was never actually run.
+func newCountingTool(name string, readOnly bool) (Tool, *int) {
+	calls := 0
+	tool := Tool{
+		Name:         name,
+		Description:  "test tool",
+		InputSchema:  json.RawMessage(`{}`),
+		ReadOnlyHint: readOnly,
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			calls++
+			return "ok", nil
+		},
+	}
+	return tool, &calls
+}
+
+func TestRequireApprovalPausesRunWithPendingCall(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+
+	fp := &fakeProvider{responses: []*provider.Response{
+		toolUseResponse("call_1", "danger.tool", `{"x":1}`),
+		textResponse("done"),
+	}}
+	tool, calls := newCountingTool("danger.tool", false)
+
+	eng := NewEngine(st, fp, Config{
+		AgentName: "test-agent", Model: "test-model", MaxTurns: 10,
+		Approvals: ApprovalPolicy{Require: []string{"danger.tool"}},
+	})
+	eng.RegisterTool(tool)
+
+	runID := "run-require"
+	if err := eng.NewRun(ctx, runID, "do the dangerous thing"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+
+	state, err := eng.Step(ctx, runID)
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if state != StateAwaitingApproval {
+		t.Fatalf("expected awaiting_approval, got %s", state)
+	}
+	if *calls != 0 {
+		t.Fatalf("expected the tool not to run before approval, got %d calls", *calls)
+	}
+
+	pending, err := st.ListPendingApprovals(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListPendingApprovals: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ToolName != "danger.tool" {
+		t.Fatalf("expected one pending call for danger.tool, got %+v", pending)
+	}
+
+	state, err = eng.RecordApproval(ctx, runID, pending[0].ID, "approved", "tester", "")
+	if err != nil {
+		t.Fatalf("RecordApproval: %v", err)
+	}
+	if state != StateReadyForTools {
+		t.Fatalf("expected ready_for_tools after approval, got %s", state)
+	}
+
+	if final := runToTerminal(t, eng, runID); final != StateCompleted {
+		t.Fatalf("expected completed, got %s", final)
+	}
+	if *calls != 1 {
+		t.Fatalf("expected the tool to run exactly once after approval, got %d", *calls)
+	}
+}
+
+func TestDenialAppendsErrorResultAndAgentTriesAlternative(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+
+	fp := &fakeProvider{responses: []*provider.Response{
+		toolUseResponse("call_1", "danger.tool", `{"x":1}`),
+		textResponse("okay, I will try a different approach instead"),
+	}}
+	tool, calls := newCountingTool("danger.tool", false)
+
+	eng := NewEngine(st, fp, Config{
+		AgentName: "test-agent", Model: "test-model", MaxTurns: 10,
+		Approvals: ApprovalPolicy{Require: []string{"danger.tool"}},
+	})
+	eng.RegisterTool(tool)
+
+	runID := "run-deny"
+	if err := eng.NewRun(ctx, runID, "do the dangerous thing"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+
+	if state, err := eng.Step(ctx, runID); err != nil {
+		t.Fatalf("Step: %v", err)
+	} else if state != StateAwaitingApproval {
+		t.Fatalf("expected awaiting_approval, got %s", state)
+	}
+
+	pending, err := st.ListPendingApprovals(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListPendingApprovals: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending call, got %d", len(pending))
+	}
+
+	state, err := eng.RecordApproval(ctx, runID, pending[0].ID, "denied", "tester", "too risky")
+	if err != nil {
+		t.Fatalf("RecordApproval: %v", err)
+	}
+	if state != StateReadyForTools {
+		t.Fatalf("expected ready_for_tools after denial, got %s", state)
+	}
+
+	// The run must not end here: denial feeds an error result back to the
+	// model, which gets another turn to try something else.
+	if final := runToTerminal(t, eng, runID); final != StateCompleted {
+		t.Fatalf("expected the run to complete after trying an alternative, got %s", final)
+	}
+	if *calls != 0 {
+		t.Fatalf("expected the denied tool to never execute, got %d calls", *calls)
+	}
+
+	msgs, err := st.ListMessages(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var found bool
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == message.BlockToolResult && b.IsError && b.Content == "tool call denied: too risky" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a tool_result explaining the denial, got messages: %+v", msgs)
+	}
+}
+
+func TestApprovalTimeoutDeny(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+
+	fp := &fakeProvider{responses: []*provider.Response{
+		toolUseResponse("call_1", "danger.tool", `{}`),
+		textResponse("moved on without it"),
+	}}
+	tool, calls := newCountingTool("danger.tool", false)
+
+	eng := NewEngine(st, fp, Config{
+		AgentName: "test-agent", Model: "test-model", MaxTurns: 10,
+		Approvals: ApprovalPolicy{
+			Require:   []string{"danger.tool"},
+			Timeout:   20 * time.Millisecond,
+			OnTimeout: "deny",
+		},
+	})
+	eng.RegisterTool(tool)
+
+	runID := "run-timeout-deny"
+	if err := eng.NewRun(ctx, runID, "do it"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	if state, err := eng.Step(ctx, runID); err != nil {
+		t.Fatalf("Step: %v", err)
+	} else if state != StateAwaitingApproval {
+		t.Fatalf("expected awaiting_approval, got %s", state)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+
+	// No human decision was ever recorded; the next Step must notice the
+	// timeout itself and apply on_timeout: deny.
+	if final := runToTerminal(t, eng, runID); final != StateCompleted {
+		t.Fatalf("expected completed after the timeout resolved the call, got %s", final)
+	}
+	if *calls != 0 {
+		t.Fatalf("expected on_timeout: deny to skip execution, got %d calls", *calls)
+	}
+
+	toolCalls, err := st.ListToolCalls(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListToolCalls: %v", err)
+	}
+	if len(toolCalls) != 1 || toolCalls[0].Approval != "denied" {
+		t.Fatalf("expected the call to be auto-denied by timeout, got %+v", toolCalls)
+	}
+	if toolCalls[0].DecidedBy == nil || *toolCalls[0].DecidedBy != "system:timeout" {
+		t.Fatalf("expected decided_by=system:timeout, got %v", toolCalls[0].DecidedBy)
+	}
+}
+
+func TestApprovalTimeoutAllow(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+
+	fp := &fakeProvider{responses: []*provider.Response{
+		toolUseResponse("call_1", "danger.tool", `{}`),
+		textResponse("done"),
+	}}
+	tool, calls := newCountingTool("danger.tool", false)
+
+	eng := NewEngine(st, fp, Config{
+		AgentName: "test-agent", Model: "test-model", MaxTurns: 10,
+		Approvals: ApprovalPolicy{
+			Require:   []string{"danger.tool"},
+			Timeout:   20 * time.Millisecond,
+			OnTimeout: "allow",
+		},
+	})
+	eng.RegisterTool(tool)
+
+	runID := "run-timeout-allow"
+	if err := eng.NewRun(ctx, runID, "do it"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	if state, err := eng.Step(ctx, runID); err != nil {
+		t.Fatalf("Step: %v", err)
+	} else if state != StateAwaitingApproval {
+		t.Fatalf("expected awaiting_approval, got %s", state)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+
+	if final := runToTerminal(t, eng, runID); final != StateCompleted {
+		t.Fatalf("expected completed after the timeout resolved the call, got %s", final)
+	}
+	if *calls != 1 {
+		t.Fatalf("expected on_timeout: allow to execute the tool, got %d calls", *calls)
+	}
+}
+
+func TestAnnotatedModeAutoApprovesReadOnlyAndPausesOnMutating(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
+
+	safeTool, safeCalls := newCountingTool("safe.tool", true)
+	riskyTool, riskyCalls := newCountingTool("risky.tool", false)
+
+	newEngine := func(fp *fakeProvider) *Engine {
+		eng := NewEngine(st, fp, Config{
+			AgentName: "test-agent", Model: "test-model", MaxTurns: 10,
+			Approvals: ApprovalPolicy{Mode: "annotated"},
+		})
+		eng.RegisterTool(safeTool)
+		eng.RegisterTool(riskyTool)
+		return eng
+	}
+
+	t.Run("read-only tool auto-approved", func(t *testing.T) {
+		fp := &fakeProvider{responses: []*provider.Response{
+			toolUseResponse("call_1", "safe.tool", `{}`),
+			textResponse("done"),
+		}}
+		eng := newEngine(fp)
+		runID := "run-annotated-safe"
+		if err := eng.NewRun(ctx, runID, "use the safe tool"); err != nil {
+			t.Fatalf("NewRun: %v", err)
+		}
+		state, err := eng.Step(ctx, runID)
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state != StateReadyForTools {
+			t.Fatalf("expected ready_for_tools (auto-approved), got %s", state)
+		}
+		if final := runToTerminal(t, eng, runID); final != StateCompleted {
+			t.Fatalf("expected completed, got %s", final)
+		}
+		if *safeCalls != 1 {
+			t.Fatalf("expected the read-only tool to run, got %d calls", *safeCalls)
+		}
+	})
+
+	t.Run("mutating tool pauses for approval", func(t *testing.T) {
+		fp := &fakeProvider{responses: []*provider.Response{
+			toolUseResponse("call_2", "risky.tool", `{}`),
+		}}
+		eng := newEngine(fp)
+		runID := "run-annotated-risky"
+		if err := eng.NewRun(ctx, runID, "use the risky tool"); err != nil {
+			t.Fatalf("NewRun: %v", err)
+		}
+		state, err := eng.Step(ctx, runID)
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state != StateAwaitingApproval {
+			t.Fatalf("expected awaiting_approval (no read-only hint), got %s", state)
+		}
+		if *riskyCalls != 0 {
+			t.Fatalf("expected the mutating tool not to run without approval, got %d calls", *riskyCalls)
+		}
+	})
 }

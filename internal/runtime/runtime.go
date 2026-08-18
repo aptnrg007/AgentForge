@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
+	"time"
 
 	"agentforge/internal/message"
 	"agentforge/internal/provider"
@@ -37,7 +39,54 @@ type Tool struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
-	Execute     ToolExecutor
+	// ReadOnlyHint mirrors MCP's tool annotation of the same name: true
+	// means the tool doesn't modify its environment. It's advisory (self
+	// reported by the server) and only used as a default under
+	// ApprovalPolicy.Mode == "annotated".
+	ReadOnlyHint bool
+	Execute      ToolExecutor
+}
+
+// ApprovalPolicy decides, per tool call, whether it can run immediately
+// ("auto") or needs a human decision ("pending"). Require and AutoApprove
+// are glob patterns against the tool's namespaced name and always take
+// precedence over Mode.
+type ApprovalPolicy struct {
+	Mode        string // never | annotated | always
+	Require     []string
+	AutoApprove []string
+	Timeout     time.Duration // 0 = no timeout
+	OnTimeout   string        // deny | allow; empty defaults to deny
+}
+
+// evaluate returns "auto" or "pending" for a tool call.
+func (p ApprovalPolicy) evaluate(toolName string, readOnly bool) string {
+	for _, pat := range p.Require {
+		if globMatch(pat, toolName) {
+			return "pending"
+		}
+	}
+	for _, pat := range p.AutoApprove {
+		if globMatch(pat, toolName) {
+			return "auto"
+		}
+	}
+	switch p.Mode {
+	case "always":
+		return "pending"
+	case "annotated":
+		if readOnly {
+			return "auto"
+		}
+		return "pending"
+	default: // "never" or unset
+		return "auto"
+	}
+}
+
+func globMatch(pattern, name string) bool {
+	ok, err := path.Match(pattern, name)
+	return err == nil && ok
 }
 
 type Config struct {
@@ -47,6 +96,7 @@ type Config struct {
 	MaxTurns    int
 	MaxTokens   int
 	Temperature float64
+	Approvals   ApprovalPolicy
 }
 
 type Engine struct {
@@ -98,6 +148,26 @@ func (e *Engine) NewRun(ctx context.Context, runID, userMessage string) error {
 	return nil
 }
 
+// ContinueRun appends a new user message to a run that has already reached
+// a terminal state and puts it back to ready_for_model, so a REPL can carry
+// on the same conversation instead of starting a fresh run every turn.
+func (e *Engine) ContinueRun(ctx context.Context, runID, userMessage string) error {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	switch State(run.State) {
+	case StateCompleted, StateFailed, StateCancelled:
+	default:
+		return fmt.Errorf("runtime: run %s is %s, not in a terminal state", runID, run.State)
+	}
+
+	if _, err := e.store.AppendMessage(ctx, runID, message.Text(message.RoleUser, userMessage)); err != nil {
+		return err
+	}
+	return e.store.UpdateRun(ctx, runID, string(StateReadyForModel), run.TurnCount, 0, nil)
+}
+
 // Step performs exactly one state transition for the given run and persists
 // the result. Callers loop until it returns a terminal state or
 // StateAwaitingApproval.
@@ -112,10 +182,101 @@ func (e *Engine) Step(ctx context.Context, runID string) (State, error) {
 		return e.stepModel(ctx, run)
 	case StateReadyForTools:
 		return e.stepTools(ctx, run)
+	case StateAwaitingApproval:
+		return e.stepAwaitingApproval(ctx, run)
 	default:
-		// awaiting_approval, completed, failed, cancelled: nothing to do.
+		// completed, failed, cancelled: nothing to do.
 		return State(run.State), nil
 	}
+}
+
+// stepAwaitingApproval lazily applies the approval timeout, if one is
+// configured and has elapsed. There's no background timer (ground rule:
+// state is re-evaluated from persisted data, not ticked by a goroutine) —
+// whoever next calls Step (or the API's /approve, /resume handlers) is the
+// one that discovers the timeout and resolves it.
+func (e *Engine) stepAwaitingApproval(ctx context.Context, run *store.Run) (State, error) {
+	if e.cfg.Approvals.Timeout <= 0 {
+		return StateAwaitingApproval, nil
+	}
+	if time.Since(time.UnixMilli(run.UpdatedAt)) < e.cfg.Approvals.Timeout {
+		return StateAwaitingApproval, nil
+	}
+
+	decision := "denied"
+	if e.cfg.Approvals.OnTimeout == "allow" {
+		decision = "approved"
+	}
+	pending, err := e.store.ListPendingApprovals(ctx, run.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, tc := range pending {
+		if err := e.store.DecideToolCall(ctx, tc.ID, decision, "system:timeout", "approval timed out"); err != nil {
+			return "", err
+		}
+	}
+
+	state, err := e.resolveAwaitingApproval(ctx, run.ID)
+	if err != nil {
+		return "", err
+	}
+	if state != StateReadyForTools {
+		return state, nil
+	}
+	// The timeout resolved every pending call in one shot; continue this
+	// Step call into execution so callers looping on Step don't need to
+	// special-case a timeout resolution.
+	run, err = e.store.GetRun(ctx, run.ID)
+	if err != nil {
+		return "", err
+	}
+	return e.stepTools(ctx, run)
+}
+
+// RecordApproval records a human decision ("approved" or "denied") on a
+// pending call and, once every pending call for the run has been decided,
+// moves the run from awaiting_approval to ready_for_tools.
+func (e *Engine) RecordApproval(ctx context.Context, runID, callID, decision, decidedBy, reason string) (State, error) {
+	if decision != "approved" && decision != "denied" {
+		return "", fmt.Errorf("runtime: invalid decision %q", decision)
+	}
+	if err := e.store.DecideToolCall(ctx, callID, decision, decidedBy, reason); err != nil {
+		return "", err
+	}
+	return e.resolveAwaitingApproval(ctx, runID)
+}
+
+// EditPendingCallArgs overwrites a pending call's arguments in place (the
+// chat REPL's "edit" action), without deciding it.
+func (e *Engine) EditPendingCallArgs(ctx context.Context, callID string, args json.RawMessage) error {
+	if !json.Valid(args) {
+		return fmt.Errorf("runtime: edited args are not valid JSON")
+	}
+	return e.store.UpdateToolCallArgs(ctx, callID, string(args))
+}
+
+func (e *Engine) resolveAwaitingApproval(ctx context.Context, runID string) (State, error) {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	if State(run.State) != StateAwaitingApproval {
+		return State(run.State), nil
+	}
+
+	n, err := e.store.CountPendingApprovals(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	if n > 0 {
+		return StateAwaitingApproval, nil
+	}
+
+	if err := e.store.UpdateRun(ctx, runID, string(StateReadyForTools), run.TurnCount, 0, nil); err != nil {
+		return "", err
+	}
+	return StateReadyForTools, nil
 }
 
 func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
@@ -203,24 +364,33 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		return StateReadyForModel, nil
 	}
 
-	// All tool calls are well-formed. Phase 1 has no approval policy yet
-	// (that's Phase 6): auto-approve everything.
+	// All tool calls are well-formed: evaluate the approval policy for
+	// each and persist its decision (or lack of one).
+	allAuto := true
 	for _, tu := range toolUses {
+		approval := e.cfg.Approvals.evaluate(tu.Name, e.tools[tu.Name].ReadOnlyHint)
+		if approval != "auto" {
+			allAuto = false
+		}
 		if err := e.store.InsertToolCall(ctx, store.ToolCall{
 			ID:       tu.ID,
 			RunID:    run.ID,
 			ToolName: tu.Name,
 			ArgsJSON: string(tu.Input),
-			Approval: "auto",
+			Approval: approval,
 		}); err != nil {
 			return "", err
 		}
 	}
 
-	if err := e.store.UpdateRun(ctx, run.ID, string(StateReadyForTools), turnCount, 0, nil); err != nil {
+	nextState := StateReadyForTools
+	if !allAuto {
+		nextState = StateAwaitingApproval
+	}
+	if err := e.store.UpdateRun(ctx, run.ID, string(nextState), turnCount, 0, nil); err != nil {
 		return "", err
 	}
-	return StateReadyForTools, nil
+	return nextState, nil
 }
 
 func (e *Engine) validateToolUse(tu message.ContentBlock) string {
@@ -237,25 +407,34 @@ func (e *Engine) validateToolUse(tu message.ContentBlock) string {
 }
 
 func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
-	pending, err := e.store.ListPendingToolCalls(ctx, run.ID)
+	unexecuted, err := e.store.ListUnexecutedToolCalls(ctx, run.ID)
 	if err != nil {
 		return "", err
 	}
 
 	var results []message.ContentBlock
-	for _, tc := range pending {
+	for _, tc := range unexecuted {
 		var resultText string
 		var isError bool
 
-		if tool, ok := e.tools[tc.ToolName]; ok {
-			out, err := tool.Execute(ctx, json.RawMessage(tc.ArgsJSON))
-			if err != nil {
-				resultText, isError = err.Error(), true
-			} else {
-				resultText = out
+		switch tc.Approval {
+		case "denied":
+			reason := "no reason given"
+			if tc.Reason != nil && *tc.Reason != "" {
+				reason = *tc.Reason
 			}
-		} else {
-			resultText, isError = fmt.Sprintf("tool %q is no longer registered", tc.ToolName), true
+			resultText, isError = fmt.Sprintf("tool call denied: %s", reason), true
+		default: // auto, approved
+			if tool, ok := e.tools[tc.ToolName]; ok {
+				out, err := tool.Execute(ctx, json.RawMessage(tc.ArgsJSON))
+				if err != nil {
+					resultText, isError = err.Error(), true
+				} else {
+					resultText = out
+				}
+			} else {
+				resultText, isError = fmt.Sprintf("tool %q is no longer registered", tc.ToolName), true
+			}
 		}
 
 		if err := e.store.UpdateToolCallResult(ctx, tc.ID, resultText, isError); err != nil {

@@ -116,7 +116,10 @@ func (s *Server) handleAgentTools(w http.ResponseWriter, r *http.Request) {
 // handleRunAgent runs the agent synchronously, stepping the engine until it
 // hits a terminal state or awaiting_approval (PLAN.md section 9).
 func (s *Server) handleRunAgent(w http.ResponseWriter, r *http.Request) {
-	ag, err := s.store.GetAgent(r.Context(), r.PathValue("name"))
+	ctx := r.Context()
+	name := r.PathValue("name")
+
+	ag, err := s.store.GetAgent(ctx, name)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -138,7 +141,6 @@ func (s *Server) handleRunAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
 	eng, err := agent.Build(ctx, s.store, s.registry, cfg, s.providerFactory)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -157,22 +159,126 @@ func (s *Server) handleRunAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := s.store.GetRun(ctx, runID)
+	resp, status, err := s.buildRunResponse(ctx, runID, state)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	msgs, err := s.store.ListMessages(ctx, runID)
+	writeJSON(w, status, resp)
+}
+
+// handleApprove records a decision on one pending tool call. It does not by
+// itself continue the run — call /resume for that — so a caller can approve
+// several pending calls before driving the engine forward again.
+func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	runID := r.PathValue("id")
+
+	var req approveRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.CallID == "" || (req.Decision != "approved" && req.Decision != "denied") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf(`call_id is required and decision must be "approved" or "denied"`))
+		return
+	}
+
+	eng, run, err := s.buildEngineForRun(ctx, runID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	// No auth/identity in v0.1 (PLAN.md section 9), so there's no real
+	// "who" to record beyond "came in over the API".
+	state, err := eng.RecordApproval(ctx, run.ID, req.CallID, req.Decision, "api", req.Reason)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"run_id": run.ID, "state": string(state)})
+}
+
+// handleResume continues a run — most commonly one sitting in
+// awaiting_approval whose pending calls have all been decided — stepping
+// the engine until it hits a terminal state or awaiting_approval again.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	runID := r.PathValue("id")
+
+	eng, run, err := s.buildEngineForRun(ctx, runID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	state, err := driveToStopPoint(ctx, eng, run.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
+	resp, status, err := s.buildRunResponse(ctx, run.ID, state)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, status, resp)
+}
+
+// buildEngineForRun reconstructs the engine that owns runID from its
+// agent's persisted config — consistent with the state machine's design
+// (PLAN.md ground rule 1): nothing about a run lives only in memory, so any
+// handler can pick it back up from the store alone.
+func (s *Server) buildEngineForRun(ctx context.Context, runID string) (*runtime.Engine, *store.Run, error) {
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, nil, err
+	}
+	ag, err := s.store.GetAgent(ctx, run.AgentName)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg, err := config.Parse([]byte(ag.YAML))
+	if err != nil {
+		return nil, nil, err
+	}
+	eng, err := agent.Build(ctx, s.store, s.registry, cfg, s.providerFactory)
+	if err != nil {
+		return nil, nil, err
+	}
+	return eng, run, nil
+}
+
+// buildRunResponse assembles the response body for a run at its current
+// stop point, including the pending-approval list when applicable.
+func (s *Server) buildRunResponse(ctx context.Context, runID string, state runtime.State) (runResponse, int, error) {
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return runResponse{}, 0, err
+	}
+	msgs, err := s.store.ListMessages(ctx, runID)
+	if err != nil {
+		return runResponse{}, 0, err
+	}
+
+	resp := runResponse{RunID: runID, State: string(state), Error: run.Error, Messages: msgs}
 	status := http.StatusOK
+
 	if state == runtime.StateAwaitingApproval {
 		status = http.StatusAccepted
+		pending, err := s.store.ListPendingApprovals(ctx, runID)
+		if err != nil {
+			return runResponse{}, 0, err
+		}
+		resp.Pending = make([]pendingCall, len(pending))
+		for i, tc := range pending {
+			resp.Pending[i] = pendingCall{CallID: tc.ID, Tool: tc.ToolName, Args: json.RawMessage(tc.ArgsJSON)}
+		}
 	}
-	writeJSON(w, status, runResponse{RunID: runID, State: string(state), Error: run.Error, Messages: msgs})
+
+	return resp, status, nil
 }
 
 // driveToStopPoint steps the engine until it reaches a terminal state or
@@ -229,9 +335,12 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, err)
-		return
+	case errors.Is(err, store.ErrNotPending):
+		writeError(w, http.StatusConflict, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
 	}
-	writeError(w, http.StatusInternalServerError, err)
 }

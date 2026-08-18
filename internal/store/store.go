@@ -26,6 +26,11 @@ const schemaVersion = 1
 // (e.g. to map it to an HTTP 404).
 var ErrNotFound = errors.New("not found")
 
+// ErrNotPending is returned by DecideToolCall when the call has already
+// been decided (or never needed a decision), so callers can distinguish a
+// stale/duplicate decision from an unknown call ID.
+var ErrNotPending = errors.New("tool call is not pending approval")
+
 type Store struct {
 	db *sql.DB
 }
@@ -261,9 +266,12 @@ type ToolCall struct {
 	ToolName   string
 	ArgsJSON   string
 	Approval   string
+	DecidedBy  *string
+	Reason     *string
 	Result     *string
 	IsError    bool
 	CreatedAt  int64
+	DecidedAt  *int64
 	ExecutedAt *int64
 }
 
@@ -278,16 +286,42 @@ func (s *Store) InsertToolCall(ctx context.Context, tc ToolCall) error {
 	return nil
 }
 
-// ListPendingToolCalls returns tool calls that are approved/auto but not yet executed.
-func (s *Store) ListPendingToolCalls(ctx context.Context, runID string) ([]ToolCall, error) {
+// ListUnexecutedToolCalls returns tool calls whose approval has been
+// settled (auto, approved, or denied) but haven't produced a result yet.
+// Denied calls are included so the caller can turn them into an error
+// tool_result without executing them; still-pending calls are excluded.
+func (s *Store) ListUnexecutedToolCalls(ctx context.Context, runID string) ([]ToolCall, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, run_id, tool_name, args_json, approval
+		SELECT id, run_id, tool_name, args_json, approval, reason
 		FROM tool_calls
-		WHERE run_id = ? AND approval IN ('auto', 'approved') AND result_json IS NULL
+		WHERE run_id = ? AND approval IN ('auto', 'approved', 'denied') AND result_json IS NULL
 		ORDER BY created_at ASC
 	`, runID)
 	if err != nil {
-		return nil, fmt.Errorf("store: list pending tool calls for run %s: %w", runID, err)
+		return nil, fmt.Errorf("store: list unexecuted tool calls for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	var out []ToolCall
+	for rows.Next() {
+		var tc ToolCall
+		if err := rows.Scan(&tc.ID, &tc.RunID, &tc.ToolName, &tc.ArgsJSON, &tc.Approval, &tc.Reason); err != nil {
+			return nil, fmt.Errorf("store: scan tool call: %w", err)
+		}
+		out = append(out, tc)
+	}
+	return out, rows.Err()
+}
+
+// ListPendingApprovals returns tool calls awaiting a human decision.
+func (s *Store) ListPendingApprovals(ctx context.Context, runID string) ([]ToolCall, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id, tool_name, args_json, approval
+		FROM tool_calls WHERE run_id = ? AND approval = 'pending'
+		ORDER BY created_at ASC
+	`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list pending approvals for run %s: %w", runID, err)
 	}
 	defer rows.Close()
 
@@ -302,6 +336,60 @@ func (s *Store) ListPendingToolCalls(ctx context.Context, runID string) ([]ToolC
 	return out, rows.Err()
 }
 
+// DecideToolCall records a human (or timeout-driven) decision on a call
+// that is still pending. It fails with ErrNotPending if the call doesn't
+// exist or was already decided, so a stale or duplicate decision doesn't
+// silently overwrite an earlier one.
+func (s *Store) DecideToolCall(ctx context.Context, id, decision, decidedBy, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE tool_calls SET approval = ?, decided_by = ?, reason = ?, decided_at = ?
+		WHERE id = ? AND approval = 'pending'
+	`, decision, decidedBy, reason, now(), id)
+	if err != nil {
+		return fmt.Errorf("store: decide tool call %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: decide tool call %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: tool call %s: %w", id, ErrNotPending)
+	}
+	return nil
+}
+
+// UpdateToolCallArgs overwrites a pending call's arguments (the chat REPL's
+// "edit" action) without changing its approval state.
+func (s *Store) UpdateToolCallArgs(ctx context.Context, id, argsJSON string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE tool_calls SET args_json = ? WHERE id = ? AND approval = 'pending'
+	`, argsJSON, id)
+	if err != nil {
+		return fmt.Errorf("store: update tool call args %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: update tool call args %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: tool call %s: %w", id, ErrNotPending)
+	}
+	return nil
+}
+
+// CountPendingApprovals returns how many tool calls are still awaiting a
+// decision for the run.
+func (s *Store) CountPendingApprovals(ctx context.Context, runID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tool_calls WHERE run_id = ? AND approval = 'pending'
+	`, runID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: count pending approvals for run %s: %w", runID, err)
+	}
+	return n, nil
+}
+
 func (s *Store) UpdateToolCallResult(ctx context.Context, id, result string, isError bool) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE tool_calls SET result_json = ?, is_error = ?, executed_at = ? WHERE id = ?
@@ -314,7 +402,8 @@ func (s *Store) UpdateToolCallResult(ctx context.Context, id, result string, isE
 
 func (s *Store) ListToolCalls(ctx context.Context, runID string) ([]ToolCall, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, run_id, tool_name, args_json, approval, result_json, is_error, created_at, executed_at
+		SELECT id, run_id, tool_name, args_json, approval, decided_by, reason,
+		       result_json, is_error, created_at, decided_at, executed_at
 		FROM tool_calls WHERE run_id = ? ORDER BY created_at ASC
 	`, runID)
 	if err != nil {
@@ -326,7 +415,8 @@ func (s *Store) ListToolCalls(ctx context.Context, runID string) ([]ToolCall, er
 	for rows.Next() {
 		var tc ToolCall
 		var isErrorInt int
-		if err := rows.Scan(&tc.ID, &tc.RunID, &tc.ToolName, &tc.ArgsJSON, &tc.Approval, &tc.Result, &isErrorInt, &tc.CreatedAt, &tc.ExecutedAt); err != nil {
+		if err := rows.Scan(&tc.ID, &tc.RunID, &tc.ToolName, &tc.ArgsJSON, &tc.Approval, &tc.DecidedBy, &tc.Reason,
+			&tc.Result, &isErrorInt, &tc.CreatedAt, &tc.DecidedAt, &tc.ExecutedAt); err != nil {
 			return nil, fmt.Errorf("store: scan tool call: %w", err)
 		}
 		tc.IsError = isErrorInt != 0

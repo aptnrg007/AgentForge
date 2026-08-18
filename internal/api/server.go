@@ -45,6 +45,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents/{name}/tools", s.handleAgentTools)
 	mux.HandleFunc("POST /v1/agents/{name}/run", s.handleRunAgent)
 	mux.HandleFunc("GET /v1/runs/{id}", s.handleGetRun)
+	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleResume)
 	return mux
 }
 

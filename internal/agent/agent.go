@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"agentforge/internal/config"
 	"agentforge/internal/mcp"
@@ -68,6 +69,11 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		maxTurns = defaultMaxTurns
 	}
 
+	// cfg.Approvals.Timeout is already validated as a parseable duration
+	// string by config.Parse, so a parse error here can't happen in
+	// practice; treat it as "no timeout" rather than failing the build.
+	timeout, _ := time.ParseDuration(cfg.Approvals.Timeout)
+
 	eng := runtime.NewEngine(st, prov, runtime.Config{
 		AgentName:   cfg.Name,
 		Model:       cfg.Model.Name,
@@ -75,6 +81,13 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		MaxTurns:    maxTurns,
 		MaxTokens:   cfg.Limits.MaxTokens,
 		Temperature: cfg.Model.Temperature,
+		Approvals: runtime.ApprovalPolicy{
+			Mode:        cfg.Approvals.Mode,
+			Require:     cfg.Approvals.Require,
+			AutoApprove: cfg.Approvals.AutoApprove,
+			Timeout:     timeout,
+			OnTimeout:   cfg.Approvals.OnTimeout,
+		},
 	})
 
 	tools, err := ResolveTools(ctx, registry, cfg)

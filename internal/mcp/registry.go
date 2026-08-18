@@ -52,10 +52,12 @@ func (r *Registry) Tools(ctx context.Context, namespace string, cfg ServerConfig
 			schema = json.RawMessage(`{}`)
 		}
 		bareName := t.Name
+		readOnly := t.Annotations != nil && t.Annotations.ReadOnlyHint
 		out = append(out, runtime.Tool{
-			Name:        namespace + "." + bareName,
-			Description: t.Description,
-			InputSchema: schema,
+			Name:         namespace + "." + bareName,
+			Description:  t.Description,
+			InputSchema:  schema,
+			ReadOnlyHint: readOnly,
 			Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 				text, isError, err := srv.callTool(ctx, bareName, input)
 				if err != nil {

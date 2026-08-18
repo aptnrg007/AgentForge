@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -342,6 +343,129 @@ func TestDaemonRestartAgentsIntact(t *testing.T) {
 	}
 	if ag.Name != "minimal" || !strings.Contains(ag.YAML, "name: minimal") {
 		t.Fatalf("agent did not survive restart intact: %+v", ag)
+	}
+}
+
+const approvalsDemoYAML = `
+name: approvals-demo
+model:
+  provider: ollama
+  name: test-model
+mcp:
+  - name: everything
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+tools:
+  - "everything.echo"
+approvals:
+  require:
+    - "everything.echo"
+`
+
+func TestRunPausesForApprovalThenApproveAndResume(t *testing.T) {
+	requireNpx(t)
+	ts := newTestServer(t, fakeProviderFactory(
+		toolUseResponse("call_1", "everything.echo", `{"message":"gated"}`),
+		textResponse("done"),
+	))
+
+	postAgent(t, ts, approvalsDemoYAML)
+
+	resp, err := http.Post(ts.URL+"/v1/agents/approvals-demo/run", "application/json", strings.NewReader(`{"message":"please echo"}`))
+	if err != nil {
+		t.Fatalf("POST run: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST run: status %d, want 202: %s", resp.StatusCode, body)
+	}
+
+	var runOut runResponse
+	if err := json.Unmarshal(body, &runOut); err != nil {
+		t.Fatalf("decode run response: %v (body=%s)", err, body)
+	}
+	if runOut.State != "awaiting_approval" {
+		t.Fatalf("state = %q, want awaiting_approval", runOut.State)
+	}
+	if len(runOut.Pending) != 1 || runOut.Pending[0].Tool != "everything.echo" {
+		t.Fatalf("expected exactly one pending call for everything.echo, got %+v", runOut.Pending)
+	}
+	callID := runOut.Pending[0].CallID
+	if callID == "" {
+		t.Fatal("expected a non-empty call_id")
+	}
+
+	// Approve: does not by itself continue the run.
+	approveBody, _ := json.Marshal(map[string]string{"call_id": callID, "decision": "approved"})
+	aResp, err := http.Post(ts.URL+"/v1/runs/"+runOut.RunID+"/approve", "application/json", bytes.NewReader(approveBody))
+	if err != nil {
+		t.Fatalf("POST approve: %v", err)
+	}
+	aBody, _ := io.ReadAll(aResp.Body)
+	aResp.Body.Close()
+	if aResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST approve: status %d: %s", aResp.StatusCode, aBody)
+	}
+
+	// Resume: drives the engine forward, executing the approved call.
+	rResp, err := http.Post(ts.URL+"/v1/runs/"+runOut.RunID+"/resume", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	rBody, _ := io.ReadAll(rResp.Body)
+	rResp.Body.Close()
+	if rResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST resume: status %d: %s", rResp.StatusCode, rBody)
+	}
+
+	var resumeOut runResponse
+	if err := json.Unmarshal(rBody, &resumeOut); err != nil {
+		t.Fatalf("decode resume response: %v (body=%s)", err, rBody)
+	}
+	if resumeOut.State != "completed" {
+		t.Fatalf("state after resume = %q, want completed (body=%s)", resumeOut.State, rBody)
+	}
+
+	var gotResult string
+	for _, m := range resumeOut.Messages {
+		for _, b := range m.Content {
+			if b.Type == message.BlockToolResult {
+				gotResult = b.Content
+			}
+		}
+	}
+	if gotResult != "Echo: gated" {
+		t.Fatalf("expected the approved call's real MCP result, got %q", gotResult)
+	}
+}
+
+func TestApproveUnknownCallReturnsConflict(t *testing.T) {
+	requireNpx(t)
+	ts := newTestServer(t, fakeProviderFactory(
+		toolUseResponse("call_1", "everything.echo", `{"message":"gated"}`),
+	))
+	postAgent(t, ts, approvalsDemoYAML)
+
+	resp, err := http.Post(ts.URL+"/v1/agents/approvals-demo/run", "application/json", strings.NewReader(`{"message":"please echo"}`))
+	if err != nil {
+		t.Fatalf("POST run: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var runOut runResponse
+	if err := json.Unmarshal(body, &runOut); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	approveBody, _ := json.Marshal(map[string]string{"call_id": "not-a-real-call-id", "decision": "approved"})
+	aResp, err := http.Post(ts.URL+"/v1/runs/"+runOut.RunID+"/approve", "application/json", bytes.NewReader(approveBody))
+	if err != nil {
+		t.Fatalf("POST approve: %v", err)
+	}
+	defer aResp.Body.Close()
+	if aResp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", aResp.StatusCode)
 	}
 }
 
