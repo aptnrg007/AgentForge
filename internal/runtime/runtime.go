@@ -86,7 +86,7 @@ func (e *Engine) toolNames() []string {
 
 // NewRun creates a run seeded with an initial user message and returns its ID.
 func (e *Engine) NewRun(ctx context.Context, runID, userMessage string) error {
-	if err := e.store.UpsertAgent(ctx, e.cfg.AgentName, ""); err != nil {
+	if err := e.store.EnsureAgentExists(ctx, e.cfg.AgentName); err != nil {
 		return err
 	}
 	if err := e.store.CreateRun(ctx, runID, e.cfg.AgentName, string(StateReadyForModel)); err != nil {

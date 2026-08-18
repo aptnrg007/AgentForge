@@ -89,6 +89,23 @@ func (s *Store) UpsertAgent(ctx context.Context, name, yaml string) error {
 	return nil
 }
 
+// EnsureAgentExists creates a placeholder agent row if none exists yet, to
+// satisfy runs.agent_name's foreign key when a run starts. Unlike
+// UpsertAgent, it never overwrites an existing row — real agent config is
+// owned by whoever called UpsertAgent (cli/api), and a run starting later
+// must not clobber it back to a placeholder.
+func (s *Store) EnsureAgentExists(ctx context.Context, name string) error {
+	t := now()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agents (name, yaml, created_at, updated_at) VALUES (?, '', ?, ?)
+		ON CONFLICT(name) DO NOTHING
+	`, name, t, t)
+	if err != nil {
+		return fmt.Errorf("store: ensure agent %s exists: %w", name, err)
+	}
+	return nil
+}
+
 func (s *Store) GetAgent(ctx context.Context, name string) (*Agent, error) {
 	var a Agent
 	err := s.db.QueryRowContext(ctx, `
