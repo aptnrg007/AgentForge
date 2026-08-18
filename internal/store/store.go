@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 var schemaSQL string
 
 const schemaVersion = 1
+
+// ErrNotFound is returned by lookups (GetAgent, GetRun) when no row
+// matches, so callers can distinguish "not found" from other failures
+// (e.g. to map it to an HTTP 404).
+var ErrNotFound = errors.New("not found")
 
 type Store struct {
 	db *sql.DB
@@ -64,6 +70,13 @@ func now() int64 { return time.Now().UnixMilli() }
 
 // --- agents ---
 
+type Agent struct {
+	Name      string
+	YAML      string
+	CreatedAt int64
+	UpdatedAt int64
+}
+
 func (s *Store) UpsertAgent(ctx context.Context, name, yaml string) error {
 	t := now()
 	_, err := s.db.ExecContext(ctx, `
@@ -72,6 +85,55 @@ func (s *Store) UpsertAgent(ctx context.Context, name, yaml string) error {
 	`, name, yaml, t, t)
 	if err != nil {
 		return fmt.Errorf("store: upsert agent %s: %w", name, err)
+	}
+	return nil
+}
+
+func (s *Store) GetAgent(ctx context.Context, name string) (*Agent, error) {
+	var a Agent
+	err := s.db.QueryRowContext(ctx, `
+		SELECT name, yaml, created_at, updated_at FROM agents WHERE name = ?
+	`, name).Scan(&a.Name, &a.YAML, &a.CreatedAt, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("store: agent %s: %w", name, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get agent %s: %w", name, err)
+	}
+	return &a, nil
+}
+
+func (s *Store) ListAgents(ctx context.Context) ([]Agent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT name, yaml, created_at, updated_at FROM agents ORDER BY name ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list agents: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Agent
+	for rows.Next() {
+		var a Agent
+		if err := rows.Scan(&a.Name, &a.YAML, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan agent: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteAgent(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("store: delete agent %s: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete agent %s: %w", name, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: agent %s: %w", name, ErrNotFound)
 	}
 	return nil
 }
@@ -108,7 +170,7 @@ func (s *Store) GetRun(ctx context.Context, id string) (*Run, error) {
 		FROM runs WHERE id = ?
 	`, id).Scan(&r.ID, &r.AgentName, &r.State, &r.TurnCount, &r.RepairCount, &r.Error, &r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("store: run %s not found", id)
+		return nil, fmt.Errorf("store: run %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: get run %s: %w", id, err)
