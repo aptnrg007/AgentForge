@@ -8,8 +8,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 
+	"agentforge/internal/mcp"
 	"agentforge/internal/message"
 	"agentforge/internal/provider"
 	"agentforge/internal/runtime"
@@ -22,6 +24,7 @@ func Run(args []string) error {
 	model := fs.String("model", "qwen2.5-coder:14b", "Ollama model name")
 	baseURL := fs.String("base-url", "", "Ollama base URL (default http://localhost:11434)")
 	maxTurns := fs.Int("max-turns", 10, "maximum model turns before the run fails")
+	withMCP := fs.Bool("mcp", false, "also register tools from the @modelcontextprotocol/server-everything reference MCP server")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -35,6 +38,8 @@ func Run(args []string) error {
 	}
 	defer st.Close()
 
+	ctx := context.Background()
+
 	eng := runtime.NewEngine(st, provider.NewOllama(*baseURL), runtime.Config{
 		AgentName:   "demo",
 		Model:       *model,
@@ -45,7 +50,20 @@ func Run(args []string) error {
 	})
 	eng.RegisterTool(runtime.NewEchoTool())
 
-	ctx := context.Background()
+	if *withMCP {
+		registry := mcp.NewRegistry(slog.Default())
+		defer registry.Close()
+		tools, err := registry.Tools(ctx, "everything", mcp.ServerConfig{
+			Command: []string{"npx", "-y", "@modelcontextprotocol/server-everything"},
+		})
+		if err != nil {
+			return fmt.Errorf("connect to MCP server: %w", err)
+		}
+		for _, t := range tools {
+			eng.RegisterTool(t)
+		}
+	}
+
 	runID := fmt.Sprintf("run_%d", os.Getpid())
 	if err := eng.NewRun(ctx, runID, fs.Arg(0)); err != nil {
 		return err
