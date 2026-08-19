@@ -58,6 +58,8 @@ type toolCallDTO struct {
 	ToolName   string          `json:"tool_name"`
 	Args       json.RawMessage `json:"args"`
 	Approval   string          `json:"approval"`
+	DecidedBy  *string         `json:"decided_by,omitempty"`
+	Reason     *string         `json:"reason,omitempty"`
 	Result     *string         `json:"result,omitempty"`
 	IsError    bool            `json:"is_error,omitempty"`
 	CreatedAt  int64           `json:"created_at"`
@@ -70,6 +72,8 @@ func toToolCallDTO(tc store.ToolCall) toolCallDTO {
 		ToolName:   tc.ToolName,
 		Args:       json.RawMessage(tc.ArgsJSON),
 		Approval:   tc.Approval,
+		DecidedBy:  tc.DecidedBy,
+		Reason:     tc.Reason,
 		Result:     tc.Result,
 		IsError:    tc.IsError,
 		CreatedAt:  tc.CreatedAt,
@@ -113,6 +117,26 @@ type doneEvent struct {
 	RunID string  `json:"run_id"`
 	State string  `json:"state"`
 	Error *string `json:"error,omitempty"`
+}
+
+// runSummary is the lightweight per-run shape for GET /v1/runs — a run's
+// header without its messages/tool calls, which GET /v1/runs/{id} still
+// carries in full via runTrace below.
+type runSummary struct {
+	RunID     string  `json:"run_id"`
+	AgentName string  `json:"agent_name"`
+	State     string  `json:"state"`
+	TurnCount int     `json:"turn_count"`
+	Error     *string `json:"error,omitempty"`
+	CreatedAt int64   `json:"created_at"`
+	UpdatedAt int64   `json:"updated_at"`
+}
+
+func toRunSummary(r store.Run) runSummary {
+	return runSummary{
+		RunID: r.ID, AgentName: r.AgentName, State: r.State, TurnCount: r.TurnCount,
+		Error: r.Error, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+	}
 }
 
 type runTrace struct {

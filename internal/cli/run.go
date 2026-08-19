@@ -13,7 +13,6 @@ import (
 	"agentforge/internal/agent"
 	"agentforge/internal/config"
 	"agentforge/internal/mcp"
-	"agentforge/internal/runtime"
 	"agentforge/internal/store"
 )
 
@@ -39,7 +38,7 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&dbPath, "db", "agentforge.db", "path to the SQLite run store (embedded mode only)")
+	cmd.Flags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (embedded mode only)")
 	cmd.Flags().StringVarP(&msg, "message", "m", "", "message to send the agent")
 	cmd.Flags().StringVar(&server, "server", "", "daemon URL to run against instead of an embedded engine, e.g. http://localhost:8080")
 	return cmd
@@ -58,6 +57,9 @@ func runLocal(ctx context.Context, dbPath, cfgPath, msg string) error {
 		return err
 	}
 
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
 	st, err := store.Open(dbPath)
 	if err != nil {
 		return err
@@ -80,31 +82,9 @@ func runLocal(ctx context.Context, dbPath, cfgPath, msg string) error {
 	if err := eng.NewRun(ctx, runID, msg); err != nil {
 		return err
 	}
+	fmt.Printf("run %s started\n", runID)
 
-	for {
-		state, err := eng.Step(ctx, runID)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("[%s] state=%s\n", runID, state)
-		if state == runtime.StateCompleted || state == runtime.StateFailed || state == runtime.StateAwaitingApproval {
-			msgs, err := st.ListMessages(ctx, runID)
-			if err != nil {
-				return err
-			}
-			printMessages(msgs)
-			if state == runtime.StateFailed {
-				run, err := st.GetRun(ctx, runID)
-				if err != nil {
-					return err
-				}
-				if run.Error != nil {
-					fmt.Fprintln(os.Stderr, "run failed:", *run.Error)
-				}
-			}
-			return nil
-		}
-	}
+	return driveLocalRun(ctx, st, eng, runID)
 }
 
 // runRemote registers the agent with a running daemon and runs it there.
@@ -128,12 +108,33 @@ func runRemote(ctx context.Context, server, cfgPath, msg string) error {
 		return fmt.Errorf("run agent: %w", err)
 	}
 
-	fmt.Printf("[%s] state=%s\n", run.RunID, run.State)
-	printMessages(run.Messages)
-	if run.State == "failed" && run.Error != nil {
-		fmt.Fprintln(os.Stderr, "run failed:", *run.Error)
+	fmt.Printf("run %s started\n", run.RunID)
+	return printRemoteRunOutcome(run)
+}
+
+// printRemoteRunOutcome renders a remoteRun's result and reports whether
+// the run failed, so callers can propagate a real exit code instead of
+// always returning nil regardless of outcome.
+func printRemoteRunOutcome(run remoteRun) error {
+	switch run.State {
+	case "awaiting_approval":
+		fmt.Printf("run %s is awaiting approval:\n", run.RunID)
+		for _, p := range run.Pending {
+			fmt.Printf("  %s  %s(%s)\n", p.CallID, p.Tool, p.Args)
+		}
+		fmt.Printf("decide with: agentforge runs approve|deny %s <call-id> --server <url>\n", run.RunID)
+		return nil
+	case "failed":
+		printMessages(run.Messages)
+		errStr := "unknown error"
+		if run.Error != nil {
+			errStr = *run.Error
+		}
+		return fmt.Errorf("run %s failed: %s", run.RunID, errStr)
+	default:
+		printMessages(run.Messages)
+		return nil
 	}
-	return nil
 }
 
 func newRunID() string {

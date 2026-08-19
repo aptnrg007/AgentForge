@@ -119,6 +119,7 @@ func (m chatModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var err error
 		if !m.hasRun {
 			m.runID = newRunID()
+			m.transcript = append(m.transcript, "run: "+m.runID)
 			err = m.eng.NewRun(m.ctx, m.runID, text)
 			m.hasRun = true
 		} else {

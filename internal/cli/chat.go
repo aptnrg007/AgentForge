@@ -25,7 +25,7 @@ func newChatCmd() *cobra.Command {
 			return runChat(cmd.Context(), dbPath, args[0])
 		},
 	}
-	cmd.Flags().StringVar(&dbPath, "db", "agentforge.db", "path to the SQLite run store")
+	cmd.Flags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store")
 	return cmd
 }
 
@@ -39,6 +39,9 @@ func runChat(ctx context.Context, dbPath, cfgPath string) error {
 		return err
 	}
 
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
 	st, err := store.Open(dbPath)
 	if err != nil {
 		return err

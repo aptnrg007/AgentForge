@@ -1,0 +1,49 @@
+name: filesystem-assistant
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You are a filesystem assistant scoped to a single project directory.
+  Use the available tools to read, search, and (when asked) edit files
+  within that directory. Always explain what you're about to change
+  before writing, moving, or creating anything.
+
+mcp:
+  - name: fs
+    transport: stdio
+    # ${AGENTFORGE_FS_ROOT} keeps this config from hardcoding one
+    # machine's path — export it to the directory you want the assistant
+    # scoped to before running: export AGENTFORGE_FS_ROOT=$(pwd)
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${AGENTFORGE_FS_ROOT}"]
+
+tools:
+  - "fs.read_text_file"
+  - "fs.read_multiple_files"
+  - "fs.list_directory"
+  - "fs.list_directory_with_sizes"
+  - "fs.directory_tree"
+  - "fs.search_files"
+  - "fs.get_file_info"
+  - "fs.write_file"
+  - "fs.edit_file"
+  - "fs.create_directory"
+  - "fs.move_file"
+
+approvals:
+  # Explicit require list rather than mode: annotated — this server's
+  # ReadOnlyHint annotations aren't something we've verified, so every
+  # mutating tool is gated by name instead of by trusting a hint.
+  require:
+    - "fs.write_file"
+    - "fs.edit_file"
+    - "fs.create_directory"
+    - "fs.move_file"
+  timeout: 10m
+  on_timeout: deny
+
+limits:
+  max_turns: 15
+  max_tokens: 2048

@@ -75,17 +75,34 @@ limits:
 
 Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` fails at load time with a clear message, not the first time a tool tries to use it. See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials.
 
+## Real agents
+
+Two configs against real, credential-free MCP servers, for actually using this rather than kicking the tires:
+
+```
+export AGENTFORGE_FS_ROOT=$(pwd)
+./agentforge chat examples/filesystem-assistant.yaml   # @modelcontextprotocol/server-filesystem, writes gated behind approval
+
+export AGENTFORGE_MEMORY_PATH=/tmp/notes.json
+./agentforge run examples/notes-assistant.yaml -m "remember that I like tea"   # @modelcontextprotocol/server-memory, ungated
+```
+
+The two make a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction.
+
 ## CLI
 
 ```
-agentforge run <agent.yaml> -m "<message>" [--server URL]   # one-shot; embedded engine, or a running daemon
-agentforge chat <agent.yaml>                                 # interactive REPL with approval prompts
-agentforge serve [--addr 127.0.0.1:8080]                     # the HTTP daemon
-agentforge agents list|get|delete [--server URL]              # local store or daemon
-agentforge runs get <id> [--server URL]                       # full trace: messages + tool calls
+agentforge run <agent.yaml> -m "<message>" [--server URL]        # one-shot; embedded engine, or a running daemon
+agentforge chat <agent.yaml>                                      # interactive REPL with approval prompts
+agentforge serve [--addr 127.0.0.1:8080]                          # the HTTP daemon
+agentforge agents list|get|delete [--server URL]                   # local store or daemon
+agentforge runs list [--agent NAME] [--limit N] [--server URL]     # most recent first
+agentforge runs get <id> [--server URL]                            # full trace: messages, tool calls, who approved
+agentforge runs approve|deny <id> <call-id> [--reason TEXT]        # decide a pending call and continue the run
+agentforge runs resume <id> [--server URL]                         # continue a run whose calls are already decided
 ```
 
-`run` and the `agents`/`runs` inspection commands work standalone against a local SQLite file, or against a running daemon via `--server` — same config, same behavior, either way.
+`run` and the `agents`/`runs` commands work standalone against a local SQLite file (`~/.agentforge/agentforge.db` by default, override with `--db`), or against a running daemon via `--server` — same config, same behavior, either way. `agentforge run` exits non-zero when the run fails or hits an unhandled error, so it's safe to chain in a script; a run that pauses for approval prints the pending call IDs and exits 0 — decide with `runs approve`/`deny`.
 
 ## HTTP API
 
@@ -98,6 +115,7 @@ GET    /v1/agents/{name}/tools       # resolved, filtered, namespaced tool list
 
 POST   /v1/agents/{name}/run         # 200 with a result, or 202 with pending approvals
 POST   /v1/agents/{name}/stream      # same, but Server-Sent Events: token/tool_call/tool_result as they happen
+GET    /v1/runs                      # most recent first; ?agent=name and ?limit=n
 GET    /v1/runs/{id}                 # full trace
 POST   /v1/runs/{id}/approve         # {call_id, decision: "approved"|"denied", reason?}
 POST   /v1/runs/{id}/resume          # drive the run forward after approving/denying
@@ -107,7 +125,7 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI, approval gates with timeouts, a chat REPL for driving all of it interactively, and SSE streaming on `/v1/agents/{name}/stream` — token deltas and tool calls as they happen, with the stream pausing cleanly (not hanging) at an approval gate.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, and SSE streaming on `/v1/agents/{name}/stream` — token deltas and tool calls as they happen, with the stream pausing cleanly (not hanging) at an approval gate.
 
 Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), Anthropic/OpenAI providers, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 

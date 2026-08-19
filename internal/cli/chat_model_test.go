@@ -205,6 +205,30 @@ func TestChatDenyDoesNotExecuteAndAgentContinues(t *testing.T) {
 	}
 }
 
+func TestChatTranscriptShowsRunID(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	fp := &scriptedProvider{responses: []*provider.Response{textResponse("hi")}}
+	eng := runtime.NewEngine(st, fp, runtime.Config{AgentName: "chat-test", Model: "test-model", MaxTurns: 10})
+
+	m := newChatModel(ctx, eng, st, "chat-test")
+	m = typeText(m, "hello")
+	m, cmd := pressKey(m, tea.KeyEnter)
+	m = drive(t, m, cmd)
+
+	if m.runID == "" {
+		t.Fatal("expected a run ID to have been generated")
+	}
+	if !containsSubstring(m.transcript, "run: "+m.runID) {
+		t.Fatalf("expected the transcript to show the run ID %q, got %+v", m.runID, m.transcript)
+	}
+}
+
 func TestChatEditArgsExecutesEditedVersion(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))

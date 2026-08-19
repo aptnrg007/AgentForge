@@ -48,6 +48,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: enable foreign keys: %w", err)
 	}
+	// WAL + a busy_timeout let a CLI command (agents/runs/run) and a
+	// running daemon safely open the same database file concurrently —
+	// without these, a second process opening the file can hit
+	// SQLITE_BUSY immediately instead of waiting briefly for the lock.
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: enable WAL mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: set busy_timeout: %w", err)
+	}
 
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
@@ -198,6 +210,42 @@ func (s *Store) GetRun(ctx context.Context, id string) (*Run, error) {
 		return nil, fmt.Errorf("store: get run %s: %w", id, err)
 	}
 	return &r, nil
+}
+
+// ListRuns returns runs ordered most-recent-first, using idx_runs_agent.
+// An empty agentName returns runs across every agent. A non-positive
+// limit returns every matching run; otherwise at most limit rows.
+func (s *Store) ListRuns(ctx context.Context, agentName string, limit int) ([]Run, error) {
+	query := `
+		SELECT id, agent_name, state, turn_count, repair_count, error, created_at, updated_at
+		FROM runs
+	`
+	var args []any
+	if agentName != "" {
+		query += ` WHERE agent_name = ?`
+		args = append(args, agentName)
+	}
+	query += ` ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list runs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Run
+	for rows.Next() {
+		var r Run
+		if err := rows.Scan(&r.ID, &r.AgentName, &r.State, &r.TurnCount, &r.RepairCount, &r.Error, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan run: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) UpdateRun(ctx context.Context, id, state string, turnCount, repairCount int, errStr *string) error {

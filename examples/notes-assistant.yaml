@@ -1,0 +1,33 @@
+name: notes-assistant
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.3
+
+instructions: |
+  You are a personal notes assistant backed by a persistent knowledge
+  graph. Use the available tools to record entities, relations, and
+  observations the user tells you about, and to look things up later.
+  Prefer small, specific observations over long freeform notes.
+
+mcp:
+  - name: memory
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-memory"]
+    env:
+      # Required: where the knowledge graph is persisted between runs.
+      # export AGENTFORGE_MEMORY_PATH=/somewhere/notes.json
+      MEMORY_FILE_PATH: ${AGENTFORGE_MEMORY_PATH}
+
+tools:
+  - "memory.*"
+
+# No approvals section, deliberately: unlike filesystem-assistant.yaml,
+# writes here just append to a local knowledge-graph file. Gating every
+# create_entities/add_observations call would be pure friction for a
+# notes tool with this little at stake.
+
+limits:
+  max_turns: 10
+  max_tokens: 2048

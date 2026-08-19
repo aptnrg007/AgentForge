@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"agentforge/internal/agent"
 	"agentforge/internal/config"
@@ -294,6 +295,31 @@ func driveToStopPoint(ctx context.Context, eng *runtime.Engine, runID string) (r
 			return state, nil
 		}
 	}
+}
+
+// handleListRuns returns runs most-recent-first, optionally filtered to
+// one agent via ?agent= and capped via ?limit= (default 20).
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid limit %q", v))
+			return
+		}
+		limit = n
+	}
+
+	runs, err := s.store.ListRuns(r.Context(), r.URL.Query().Get("agent"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]runSummary, len(runs))
+	for i, run := range runs {
+		out[i] = toRunSummary(run)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {

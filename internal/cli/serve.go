@@ -20,6 +20,9 @@ func newServeCmd() *cobra.Command {
 		Short: "Run the agentforge HTTP daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureDBDir(dbPath); err != nil {
+				return err
+			}
 			st, err := store.Open(dbPath)
 			if err != nil {
 				return err
@@ -38,6 +41,6 @@ func newServeCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "address to listen on (no auth in v0.1: keep this on localhost)")
-	cmd.Flags().StringVar(&dbPath, "db", "agentforge.db", "path to the SQLite run store")
+	cmd.Flags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store")
 	return cmd
 }

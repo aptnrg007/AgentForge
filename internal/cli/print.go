@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"agentforge/internal/message"
 )
@@ -21,10 +22,65 @@ func printMessages(msgs []message.Message) {
 	}
 }
 
-func printRunTrace(id, state string, turnCount int, errStr *string, msgs []message.Message) {
+// toolCallRow is the print layer's view of a tool call, common to both the
+// local store.ToolCall and the remote remoteToolCall shapes so
+// printToolCalls doesn't need to care which one it's rendering.
+type toolCallRow struct {
+	ID        string
+	ToolName  string
+	Approval  string
+	DecidedBy *string
+	Reason    *string
+	Result    *string
+	IsError   bool
+}
+
+func printToolCalls(calls []toolCallRow) {
+	for _, tc := range calls {
+		result := "(no result yet)"
+		if tc.Result != nil {
+			result = *tc.Result
+			if tc.IsError {
+				result = "ERROR: " + result
+			}
+		}
+		by := ""
+		if tc.DecidedBy != nil {
+			by = " decided_by=" + *tc.DecidedBy
+			if tc.Reason != nil && *tc.Reason != "" {
+				by += fmt.Sprintf(" (%s)", *tc.Reason)
+			}
+		}
+		fmt.Printf("tool_call %s %s approval=%s%s -> %s\n", tc.ID, tc.ToolName, tc.Approval, by, result)
+	}
+}
+
+func printRunTrace(id, state string, turnCount int, errStr *string, msgs []message.Message, calls []toolCallRow) {
 	fmt.Printf("run %s state=%s turns=%d\n", id, state, turnCount)
 	if errStr != nil {
 		fmt.Println("error:", *errStr)
 	}
+	printToolCalls(calls)
 	printMessages(msgs)
+}
+
+// runRow is the print layer's view of a run for `runs list`, common to
+// both the local store.Run and remote remoteRunSummary shapes.
+type runRow struct {
+	ID        string
+	AgentName string
+	State     string
+	TurnCount int
+	CreatedAt int64
+}
+
+func printRunsList(rows []runRow) {
+	if len(rows) == 0 {
+		fmt.Println("no runs")
+		return
+	}
+	for _, r := range rows {
+		fmt.Printf("%s  %-17s  agent=%-20s turns=%-3d  %s\n",
+			r.ID, r.State, r.AgentName, r.TurnCount, time.UnixMilli(r.CreatedAt).Format(time.RFC3339))
+	}
 }

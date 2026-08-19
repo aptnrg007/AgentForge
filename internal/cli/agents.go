@@ -39,7 +39,7 @@ func newAgentsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{Use: "agents", Short: "Manage agents"}
 	cmd.PersistentFlags().StringVar(&server, "server", "", "daemon URL, e.g. http://localhost:8080 (defaults to the local --db store)")
-	cmd.PersistentFlags().StringVar(&dbPath, "db", "agentforge.db", "path to the SQLite run store (used when --server is not set)")
+	cmd.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (used when --server is not set)")
 	cmd.AddCommand(list, get, del)
 	return cmd
 }
@@ -56,6 +56,9 @@ func agentsList(ctx context.Context, server, dbPath string) error {
 		return nil
 	}
 
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
 	st, err := store.Open(dbPath)
 	if err != nil {
 		return err
@@ -82,6 +85,9 @@ func agentsGet(ctx context.Context, server, dbPath, name string) error {
 		return nil
 	}
 
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
 	st, err := store.Open(dbPath)
 	if err != nil {
 		return err
@@ -101,6 +107,9 @@ func agentsDelete(ctx context.Context, server, dbPath, name string) error {
 		return apiDelete(ctx, server+"/v1/agents/"+name)
 	}
 
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
 	st, err := store.Open(dbPath)
 	if err != nil {
 		return err

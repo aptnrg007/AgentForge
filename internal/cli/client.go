@@ -24,20 +24,39 @@ type remoteAgent struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+type remotePendingCall struct {
+	CallID string          `json:"call_id"`
+	Tool   string          `json:"tool"`
+	Args   json.RawMessage `json:"args"`
+}
+
 type remoteRun struct {
-	RunID    string            `json:"run_id"`
-	State    string            `json:"state"`
-	Error    *string           `json:"error,omitempty"`
-	Messages []message.Message `json:"messages,omitempty"`
+	RunID    string              `json:"run_id"`
+	State    string              `json:"state"`
+	Error    *string             `json:"error,omitempty"`
+	Messages []message.Message   `json:"messages,omitempty"`
+	Pending  []remotePendingCall `json:"pending,omitempty"`
+}
+
+type remoteRunSummary struct {
+	RunID     string  `json:"run_id"`
+	AgentName string  `json:"agent_name"`
+	State     string  `json:"state"`
+	TurnCount int     `json:"turn_count"`
+	Error     *string `json:"error,omitempty"`
+	CreatedAt int64   `json:"created_at"`
+	UpdatedAt int64   `json:"updated_at"`
 }
 
 type remoteToolCall struct {
-	ID       string          `json:"id"`
-	ToolName string          `json:"tool_name"`
-	Args     json.RawMessage `json:"args"`
-	Approval string          `json:"approval"`
-	Result   *string         `json:"result,omitempty"`
-	IsError  bool            `json:"is_error,omitempty"`
+	ID        string          `json:"id"`
+	ToolName  string          `json:"tool_name"`
+	Args      json.RawMessage `json:"args"`
+	Approval  string          `json:"approval"`
+	DecidedBy *string         `json:"decided_by,omitempty"`
+	Reason    *string         `json:"reason,omitempty"`
+	Result    *string         `json:"result,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
 }
 
 type remoteRunTrace struct {
