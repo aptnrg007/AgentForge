@@ -41,9 +41,10 @@ approval needed (1/1): everything.get-sum
 name: github-assistant
 
 model:
-  provider: ollama              # ollama (anthropic/openai come later)
+  provider: ollama              # ollama | anthropic (openai comes later)
   name: qwen2.5-coder:14b
   temperature: 0.2
+  # api_key: ${ANTHROPIC_API_KEY}   # anthropic only; required, same ${VAR} resolution as GITHUB_TOKEN below
 
 instructions: |
   You are a GitHub assistant. Use the available tools to answer questions
@@ -73,7 +74,7 @@ limits:
   max_tokens: 4096
 ```
 
-Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` fails at load time with a clear message, not the first time a tool tries to use it. See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials.
+Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic` without an `api_key` at all fails the same way, before any request goes out. See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point either at Anthropic instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
 
 ## Real agents
 
@@ -125,9 +126,9 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, and SSE streaming on `/v1/agents/{name}/stream` — token deltas and tool calls as they happen, with the stream pausing cleanly (not hanging) at an approval gate.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, and an Anthropic provider alongside Ollama — same `Provider` interface, same approval/denial/resume flow, `model.provider: anthropic` is the only config change.
 
-Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), Anthropic/OpenAI providers, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), an OpenAI provider, structured output / schema validation, per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 
 ## Building
 

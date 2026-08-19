@@ -30,6 +30,8 @@ func DefaultProviderFactory(model config.ModelConfig) (provider.Provider, error)
 	switch model.Provider {
 	case "ollama":
 		return provider.NewOllama(model.BaseURL), nil
+	case "anthropic":
+		return provider.NewAnthropic(model.APIKey, model.BaseURL), nil
 	default:
 		return nil, fmt.Errorf("model.provider %q not yet supported", model.Provider)
 	}

@@ -47,6 +47,8 @@ func (p *scriptedProvider) Stream(ctx context.Context, r provider.Request) (prov
 	return provider.NewResponseStream(resp), nil
 }
 
+func (p *scriptedProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
 func toolUseResponse(id, name, input string) *provider.Response {
 	return &provider.Response{
 		Content:    []message.ContentBlock{{Type: message.BlockToolUse, ID: id, Name: name, Input: json.RawMessage(input)}},

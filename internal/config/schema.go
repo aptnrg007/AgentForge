@@ -22,6 +22,10 @@ type ModelConfig struct {
 	Name        string  `json:"name"`
 	Temperature float64 `json:"temperature,omitempty"`
 	BaseURL     string  `json:"base_url,omitempty"`
+	// APIKey is typically an ${ENV_VAR} reference, resolved like any other
+	// config string (env.go) — so a missing key fails at load time with a
+	// clear message, not on the first request.
+	APIKey string `json:"api_key,omitempty"`
 }
 
 // MCPServer describes one MCP server to connect to. Only Transport: stdio

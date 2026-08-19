@@ -67,6 +67,8 @@ func (p *countingProvider) Stream(ctx context.Context, r provider.Request) (prov
 	return provider.NewResponseStream(resp), nil
 }
 
+func (p *countingProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
 // deltaProvider always streams a scripted sequence of deltas via Stream and
 // fails the test if Complete is ever called — used to prove the engine
 // takes the streaming path (and forwards deltas) when a sink is installed.
@@ -86,6 +88,8 @@ func (p *deltaProvider) Complete(ctx context.Context, r provider.Request) (*prov
 func (p *deltaProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
 	return &deltaStream{deltas: p.deltas, resp: p.resp}, nil
 }
+
+func (p *deltaProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
 
 func TestTokenEventsArriveInOrderAndConcatenate(t *testing.T) {
 	ctx := context.Background()

@@ -99,6 +99,40 @@ mcp:
 	}
 }
 
+func TestModelAPIKeyIsInterpolated(t *testing.T) {
+	t.Setenv("AGENTFORGE_TEST_ANTHROPIC_KEY", "sk-ant-test")
+
+	cfg, err := Parse([]byte(`
+name: ok
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  api_key: ${AGENTFORGE_TEST_ANTHROPIC_KEY}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Model.APIKey != "sk-ant-test" {
+		t.Fatalf("Model.APIKey = %q, want %q", cfg.Model.APIKey, "sk-ant-test")
+	}
+}
+
+func TestMissingModelAPIKeyEnvVarFailsAtLoad(t *testing.T) {
+	_, err := Parse([]byte(`
+name: bad
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  api_key: ${AGENTFORGE_TEST_DEFINITELY_UNSET_ANTHROPIC_KEY}
+`))
+	if err == nil {
+		t.Fatal("expected an error for the missing api_key env var")
+	}
+	if !strings.Contains(err.Error(), "AGENTFORGE_TEST_DEFINITELY_UNSET_ANTHROPIC_KEY") {
+		t.Fatalf("expected error to name the missing var, got: %v", err)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -155,6 +189,14 @@ approvals:
   mode: sometimes
 `,
 			wantErr: `mode: unknown value "sometimes"`,
+		},
+		{
+			name: "anthropic without api_key",
+			yaml: `
+name: bad
+model: {provider: anthropic, name: claude-sonnet-4-6}
+`,
+			wantErr: `api_key is required for provider "anthropic"`,
 		},
 	}
 

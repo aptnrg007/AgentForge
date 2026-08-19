@@ -88,6 +88,8 @@ func (p *multiDeltaProvider) Stream(ctx context.Context, r provider.Request) (pr
 	return &multiDeltaStream{deltas: p.deltas, resp: p.resp}, nil
 }
 
+func (p *multiDeltaProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
 func multiDeltaProviderFactory(deltas []string, resp *provider.Response) func(config.ModelConfig) (provider.Provider, error) {
 	p := &multiDeltaProvider{deltas: deltas, resp: resp}
 	return func(config.ModelConfig) (provider.Provider, error) { return p, nil }

@@ -59,6 +59,14 @@ func (m ModelConfig) validate() error {
 	if m.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	// This runs after env interpolation (load.go), so an api_key: ${VAR}
+	// reference to a missing variable has already failed with a clearer
+	// error by this point — this only catches api_key being left out of
+	// the YAML entirely, fast at load time rather than as a 401 on the
+	// first request.
+	if m.Provider == "anthropic" && m.APIKey == "" {
+		return fmt.Errorf("api_key is required for provider \"anthropic\"")
+	}
 	return nil
 }
 

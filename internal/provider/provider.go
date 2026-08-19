@@ -39,6 +39,15 @@ type Response struct {
 	Usage      Usage
 }
 
+// Capabilities describes what a provider supports, so callers can adapt
+// instead of assuming every provider behaves like Ollama (e.g. whether
+// image tool results can be passed through instead of stringified).
+type Capabilities struct {
+	Vision           bool
+	ToolUse          bool
+	StructuredOutput bool
+}
+
 type Provider interface {
 	Name() string
 	Complete(ctx context.Context, r Request) (*Response, error)
@@ -46,4 +55,5 @@ type Provider interface {
 	// A provider that can't stream natively can satisfy this with
 	// NewResponseStream(resp) after computing the full response.
 	Stream(ctx context.Context, r Request) (Stream, error)
+	Capabilities() Capabilities
 }

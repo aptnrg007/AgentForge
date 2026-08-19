@@ -29,6 +29,10 @@ func NewOllama(baseURL string) *Ollama {
 
 func (o *Ollama) Name() string { return "ollama" }
 
+func (o *Ollama) Capabilities() Capabilities {
+	return Capabilities{ToolUse: true}
+}
+
 // --- wire format ---
 
 type ollamaToolCall struct {

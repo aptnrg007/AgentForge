@@ -40,6 +40,8 @@ func (f *fakeProvider) Stream(ctx context.Context, r provider.Request) (provider
 	return provider.NewResponseStream(resp), nil
 }
 
+func (f *fakeProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
 func textResponse(text string) *provider.Response {
 	return &provider.Response{
 		Content:    []message.ContentBlock{{Type: message.BlockText, Text: text}},

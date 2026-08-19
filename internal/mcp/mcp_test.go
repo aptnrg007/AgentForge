@@ -115,6 +115,8 @@ func (p *scriptedProvider) Stream(ctx context.Context, r provider.Request) (prov
 	return provider.NewResponseStream(resp), nil
 }
 
+func (p *scriptedProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
 func TestRuntimeCallsRealMCPTool(t *testing.T) {
 	requireNpx(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
