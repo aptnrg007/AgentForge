@@ -59,6 +59,10 @@ func runChat(ctx context.Context, dbPath, cfgPath string) error {
 	if err != nil {
 		return err
 	}
+	// output: is meant to gate a one-shot run's final answer; forcing
+	// every reply in an interactive session to conform to it would make
+	// chat unusable, so chat is the one caller that opts out.
+	eng.ClearOutputPolicy()
 
 	_, err = tea.NewProgram(newChatModel(ctx, eng, st, cfg.Name)).Run()
 	return err

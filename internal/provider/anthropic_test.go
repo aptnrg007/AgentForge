@@ -374,3 +374,32 @@ func TestAnthropicStreamErrorEventSurfacesErr(t *testing.T) {
 		t.Fatal("expected Response to surface the same error")
 	}
 }
+
+// TestAnthropicIgnoresResponseSchema pins the "fallback-only for v1"
+// scope decision: Anthropic has no native structured-output field, so
+// Request.ResponseSchema must never surface as format/response_format/
+// tool_choice on the wire — the engine's validate-and-retry path is the
+// only structured-output mechanism Anthropic gets, same as any provider
+// with Capabilities().StructuredOutput false. This is a regression guard
+// so native support can't be half-implemented by accident later.
+func TestAnthropicIgnoresResponseSchema(t *testing.T) {
+	var captured map[string]any
+	a := newTestAnthropic(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(anthropicResponse{StopReason: "end_turn"})
+	})
+
+	_, err := a.Complete(context.Background(), Request{Model: "m", ResponseSchema: json.RawMessage(`{"type":"object"}`)})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	for _, key := range []string{"format", "response_format", "tool_choice"} {
+		if _, ok := captured[key]; ok {
+			t.Fatalf("expected no %q field on an Anthropic request, got %v", key, captured[key])
+		}
+	}
+	if a.Capabilities().StructuredOutput {
+		t.Fatal("expected Anthropic to not advertise native StructuredOutput support")
+	}
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StorySpec",
+  "type": "object",
+  "required": ["title", "beats"],
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "A short working title for the story."
+    },
+    "beats": {
+      "type": "array",
+      "description": "The story's beats, in order.",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

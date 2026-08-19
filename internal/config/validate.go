@@ -39,6 +39,9 @@ func (c *Config) validate() error {
 	if err := c.Limits.validate(); err != nil {
 		return fmt.Errorf("limits: %w", err)
 	}
+	if err := c.Output.validate(); err != nil {
+		return fmt.Errorf("output: %w", err)
+	}
 	switch c.Session.Type {
 	case "", "none", "sqlite":
 	default:
@@ -118,6 +121,21 @@ func (l LimitsConfig) validate() error {
 		if _, err := time.ParseDuration(l.Timeout); err != nil {
 			return fmt.Errorf("timeout: %w", err)
 		}
+	}
+	return nil
+}
+
+func (o OutputConfig) validate() error {
+	switch o.OnInvalid {
+	case "", "retry", "fail":
+	default:
+		return fmt.Errorf("on_invalid: unknown value %q", o.OnInvalid)
+	}
+	if o.MaxRetries < 0 {
+		return fmt.Errorf("max_retries: must be >= 0")
+	}
+	if o.Schema == "" && (o.OnInvalid != "" || o.MaxRetries != 0) {
+		return fmt.Errorf("on_invalid/max_retries set without schema")
 	}
 	return nil
 }

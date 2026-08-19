@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"agentforge/internal/message"
@@ -28,8 +29,13 @@ const (
 	StateCancelled        State = "cancelled"
 )
 
-// maxRepairAttempts is how many consecutive malformed-tool-call turns are
-// tolerated before a run is failed outright.
+// maxRepairAttempts is how many consecutive self-correction turns are
+// tolerated before a run is failed outright — both for malformed tool
+// calls (stepModel's repair path) and, sharing the same run.RepairCount
+// column and the same cap by default, for output-schema violations
+// (stepModel's validateOutput). The two are still distinguishable in a
+// run's message trace: repair appends a RoleTool message, a schema
+// violation appends a RoleUser message.
 const maxRepairAttempts = 2
 
 // ToolExecutor runs a single tool call and returns its result text.
@@ -89,6 +95,34 @@ func globMatch(pattern, name string) bool {
 	return err == nil && ok
 }
 
+// OutputPolicy turns on schema-validated structured output for a run's
+// final answer. Validate is a plain func rather than an interface or a
+// concrete schema type so internal/runtime never needs to import a JSON
+// Schema library — agent.Build supplies the closure (JSON extraction +
+// validation) built around internal/schema. A nil Validate means no
+// validation at all, which is also what Engine.ClearOutputPolicy sets,
+// e.g. for a chat session that shouldn't force every reply through a
+// schema meant for a one-shot run's final answer.
+type OutputPolicy struct {
+	// Validate returns nil on success, or a non-empty list of problems
+	// (e.g. "not valid JSON", or a schema violation) otherwise.
+	Validate func(instance []byte) []string
+	// Schema is embedded in retry feedback when !Native (with native
+	// enforcement the schema is already applied server-side, so
+	// re-sending it on a retry would just be wasted tokens).
+	Schema json.RawMessage
+	// OnInvalid is "retry" (default, empty) or "fail".
+	OnInvalid string
+	// MaxRetries caps consecutive schema-violation turns. <= 0 means
+	// "use the engine default" (see NewEngine) — a policy is only
+	// constructed at all when validation is wanted, so 0 here never
+	// means "no retries"; on_invalid: fail is how a caller asks for that.
+	MaxRetries int
+	// Native means the provider was asked to (and can) natively enforce
+	// Schema — see Engine.responseSchemaForRequest.
+	Native bool
+}
+
 type Config struct {
 	AgentName   string
 	Model       string
@@ -97,6 +131,7 @@ type Config struct {
 	MaxTokens   int
 	Temperature float64
 	Approvals   ApprovalPolicy
+	Output      OutputPolicy
 }
 
 type Engine struct {
@@ -111,11 +146,27 @@ func NewEngine(st *store.Store, p provider.Provider, cfg Config) *Engine {
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = 10
 	}
+	if cfg.Output.Validate != nil && cfg.Output.MaxRetries <= 0 {
+		// Matches maxRepairAttempts: 2 retries = 3 total turns, which is
+		// also the structured-output acceptance bar ("self-corrects by
+		// turn 3").
+		cfg.Output.MaxRetries = maxRepairAttempts
+	}
 	return &Engine{store: st, provider: p, tools: map[string]Tool{}, cfg: cfg}
 }
 
 func (e *Engine) RegisterTool(t Tool) {
 	e.tools[t.Name] = t
+}
+
+// ClearOutputPolicy turns off structured-output validation on an
+// already-built engine. internal/cli/chat.go calls this right after
+// agent.Build: an output: schema is meant to gate a one-shot run's final
+// answer, and forcing every reply in an interactive chat session to
+// conform to it would make chat unusable. Not safe to call concurrently
+// with Step.
+func (e *Engine) ClearOutputPolicy() {
+	e.cfg.Output = OutputPolicy{}
 }
 
 // OnEvent installs a callback that receives fine-grained progress events
@@ -338,12 +389,13 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	}
 
 	resp, err := e.complete(ctx, provider.Request{
-		Model:       e.cfg.Model,
-		System:      e.cfg.System,
-		Messages:    msgs,
-		Tools:       e.toolDefs(),
-		MaxTokens:   e.cfg.MaxTokens,
-		Temperature: e.cfg.Temperature,
+		Model:          e.cfg.Model,
+		System:         e.cfg.System,
+		Messages:       msgs,
+		Tools:          e.toolDefs(),
+		MaxTokens:      e.cfg.MaxTokens,
+		Temperature:    e.cfg.Temperature,
+		ResponseSchema: e.responseSchemaForRequest(),
 	})
 	turnCount := run.TurnCount + 1
 	if err != nil {
@@ -366,6 +418,11 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	}
 
 	if len(toolUses) == 0 {
+		if e.cfg.Output.Validate != nil {
+			if state, done, err := e.validateOutput(ctx, run, resp.Content, turnCount); done {
+				return state, err
+			}
+		}
 		if err := e.store.UpdateRun(ctx, run.ID, string(StateCompleted), turnCount, 0, nil); err != nil {
 			return "", err
 		}
@@ -449,6 +506,91 @@ func (e *Engine) validateToolUse(tu message.ContentBlock) string {
 		return fmt.Sprintf("tool %q call has malformed JSON input", tu.Name)
 	}
 	return ""
+}
+
+// responseSchemaForRequest returns the schema to send for native
+// enforcement, or nil. Only sent when the provider can enforce it and
+// the agent has no tools registered: constrained decoding to a schema
+// makes tool calls impossible on that turn, so a tool-using agent always
+// takes the validate-and-retry fallback instead, exactly like a provider
+// with no native support at all.
+func (e *Engine) responseSchemaForRequest() json.RawMessage {
+	if !e.cfg.Output.Native || len(e.tools) != 0 {
+		return nil
+	}
+	return e.cfg.Output.Schema
+}
+
+// validateOutput checks a final (no-tool-call) turn's text against
+// e.cfg.Output.Validate. done reports whether it already decided (and
+// persisted) the run's next state — StateFailed or StateReadyForModel —
+// so stepModel's caller should return immediately; done is false only
+// when validation passed, in which case the caller proceeds to its own
+// StateCompleted transition exactly as it did before validation existed.
+// This mirrors the tool-call repair block that follows it in stepModel as
+// closely as possible: same RepairCount reuse, same "append feedback and
+// loop back to ready_for_model, capped, else fail" shape.
+func (e *Engine) validateOutput(ctx context.Context, run *store.Run, content []message.ContentBlock, turnCount int) (state State, done bool, err error) {
+	var text strings.Builder
+	for _, b := range content {
+		if b.Type == message.BlockText {
+			text.WriteString(b.Text)
+		}
+	}
+
+	problems := e.cfg.Output.Validate([]byte(text.String()))
+	if len(problems) == 0 {
+		return "", false, nil
+	}
+
+	if e.cfg.Output.OnInvalid == "fail" {
+		errStr := "output schema validation failed: " + strings.Join(problems, "; ")
+		if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), turnCount, run.RepairCount, &errStr); uerr != nil {
+			return "", true, uerr
+		}
+		return StateFailed, true, nil
+	}
+
+	retries := run.RepairCount + 1
+	if retries > e.cfg.Output.MaxRetries {
+		errStr := fmt.Sprintf("output schema validation failed after %d retries: %s", e.cfg.Output.MaxRetries, strings.Join(problems, "; "))
+		if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), turnCount, retries, &errStr); uerr != nil {
+			return "", true, uerr
+		}
+		return StateFailed, true, nil
+	}
+
+	feedback := message.Text(message.RoleUser, e.outputRetryFeedback(problems))
+	if _, aerr := e.store.AppendMessage(ctx, run.ID, feedback); aerr != nil {
+		return "", true, aerr
+	}
+	if uerr := e.store.UpdateRun(ctx, run.ID, string(StateReadyForModel), turnCount, retries, nil); uerr != nil {
+		return "", true, uerr
+	}
+	return StateReadyForModel, true, nil
+}
+
+// outputRetryFeedback builds the RoleUser turn appended after a schema
+// violation — not RoleTool/BlockToolResult: there is no tool_use_id to
+// reference, and a tool_result with no matching tool_use is a hard error
+// for at least Anthropic. RoleUser is what every provider accepts after
+// an assistant turn. The schema itself is only re-included when
+// validation isn't native — with native enforcement it's already applied
+// server-side, so repeating it would just spend tokens.
+func (e *Engine) outputRetryFeedback(problems []string) string {
+	var b strings.Builder
+	b.WriteString("Your previous response did not conform to the required JSON schema.\n\nErrors:\n")
+	for _, p := range problems {
+		b.WriteString("  - ")
+		b.WriteString(p)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nReply with only a JSON object conforming to the schema. Do not include prose, explanations, or markdown code fences.")
+	if !e.cfg.Output.Native && len(e.cfg.Output.Schema) > 0 {
+		b.WriteString("\n\nSchema:\n")
+		b.Write(e.cfg.Output.Schema)
+	}
+	return b.String()
 }
 
 func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {

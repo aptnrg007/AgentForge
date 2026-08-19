@@ -15,6 +15,17 @@ type Config struct {
 	Approvals    ApprovalsConfig `json:"approvals,omitempty"`
 	Limits       LimitsConfig    `json:"limits,omitempty"`
 	Session      SessionConfig   `json:"session,omitempty"`
+	Output       OutputConfig    `json:"output,omitempty"`
+
+	// SourceDir is the directory Load read this config's file from, used
+	// to resolve output.schema (and any future relative path) against
+	// the config's own location rather than the process's cwd. json:"-"
+	// keeps it invisible to yaml.UnmarshalStrict's unknown-key check, so
+	// a stray "sourceDir:" in YAML still errors like any other typo.
+	// Empty when the config came from Parse instead of Load (e.g. every
+	// reconstruction from YAML stored in SQLite) — there is no source
+	// file in that case.
+	SourceDir string `json:"-"`
 }
 
 type ModelConfig struct {
@@ -59,4 +70,23 @@ type LimitsConfig struct {
 // persistence itself isn't implemented until a later phase.
 type SessionConfig struct {
 	Type string `json:"type,omitempty"`
+}
+
+// OutputConfig turns on schema-validated structured output for a run's
+// final answer (not tool calls). Only applies to one-shot runs (`run`,
+// the HTTP API) — internal/cli/chat.go explicitly opts a chat session out
+// via Engine.ClearOutputPolicy, since forcing every conversational reply
+// to conform to a schema would make interactive chat unusable.
+type OutputConfig struct {
+	// Schema is a path to a JSON Schema file (draft-07 or draft
+	// 2020-12), resolved relative to the config file's own directory
+	// when relative and the config was loaded from a file (see
+	// Config.SourceDir) — otherwise relative to the process's cwd.
+	Schema string `json:"schema,omitempty"`
+	// OnInvalid is "retry" (default) or "fail".
+	OnInvalid string `json:"on_invalid,omitempty"`
+	// MaxRetries caps consecutive schema-violation turns; 0 means "use
+	// the engine's default" (2, matching the tool-call repair ceiling),
+	// not "no retries" — on_invalid: fail is how you get zero retries.
+	MaxRetries int `json:"max_retries,omitempty"`
 }

@@ -26,6 +26,12 @@ type Request struct {
 	Tools       []ToolDef
 	MaxTokens   int
 	Temperature float64
+	// ResponseSchema, when non-empty, asks the provider to natively
+	// constrain its output to this JSON Schema. Only meaningful for a
+	// provider whose Capabilities().StructuredOutput is true; others
+	// ignore it, and the caller falls back to validating the response
+	// text itself and retrying.
+	ResponseSchema json.RawMessage
 }
 
 type Usage struct {

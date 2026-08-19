@@ -1,0 +1,19 @@
+name: structured-output
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.3
+
+instructions: |
+  You turn a topic into a short StorySpec: a title and an ordered list of
+  story beats.
+
+output:
+  schema: ./schemas/story-spec.json
+  on_invalid: retry
+  max_retries: 2
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

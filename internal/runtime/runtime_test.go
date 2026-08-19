@@ -19,11 +19,19 @@ import (
 type fakeProvider struct {
 	responses []*provider.Response
 	calls     int
+	// requests records every Request Complete was called with, so tests
+	// can assert on what the engine actually sent (e.g. ResponseSchema).
+	requests []provider.Request
+	// caps lets a test opt into providers.Capabilities.StructuredOutput
+	// etc.; the zero value matches every pre-existing test's expectation
+	// of an all-false Capabilities().
+	caps provider.Capabilities
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
 
 func (f *fakeProvider) Complete(ctx context.Context, r provider.Request) (*provider.Response, error) {
+	f.requests = append(f.requests, r)
 	if f.calls >= len(f.responses) {
 		return nil, fmt.Errorf("fake provider: no more scripted responses (call %d)", f.calls)
 	}
@@ -40,7 +48,7 @@ func (f *fakeProvider) Stream(ctx context.Context, r provider.Request) (provider
 	return provider.NewResponseStream(resp), nil
 }
 
-func (f *fakeProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+func (f *fakeProvider) Capabilities() provider.Capabilities { return f.caps }
 
 func textResponse(text string) *provider.Response {
 	return &provider.Response{

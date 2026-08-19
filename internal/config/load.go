@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 
 	"sigs.k8s.io/yaml"
@@ -17,6 +18,10 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
+	// Only Load has a real file path to resolve relative fields (like
+	// output.schema) against — Parse is also used to reconstruct a
+	// config from YAML stored in SQLite, which has no source directory.
+	cfg.SourceDir = filepath.Dir(path)
 	return cfg, nil
 }
 

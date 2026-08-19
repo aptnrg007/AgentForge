@@ -1,0 +1,282 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"agentforge/internal/config"
+	"agentforge/internal/mcp"
+	"agentforge/internal/message"
+	"agentforge/internal/provider"
+	"agentforge/internal/runtime"
+	"agentforge/internal/store"
+)
+
+const testStorySchema = `{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"required": ["title", "beats"],
+	"properties": {
+		"title": {"type": "string"},
+		"beats": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+	}
+}`
+
+// scriptedProvider replays fixed responses, standing in for a real LLM —
+// the same pattern established in internal/api, internal/cli, and
+// internal/mcp's own test files.
+type scriptedProvider struct {
+	responses []*provider.Response
+	calls     int
+	caps      provider.Capabilities
+	requests  []provider.Request
+}
+
+func (p *scriptedProvider) Name() string { return "scripted" }
+
+func (p *scriptedProvider) Complete(ctx context.Context, r provider.Request) (*provider.Response, error) {
+	p.requests = append(p.requests, r)
+	if p.calls >= len(p.responses) {
+		return nil, fmt.Errorf("scripted provider: no more responses")
+	}
+	resp := p.responses[p.calls]
+	p.calls++
+	return resp, nil
+}
+
+func (p *scriptedProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	resp, err := p.Complete(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewResponseStream(resp), nil
+}
+
+func (p *scriptedProvider) Capabilities() provider.Capabilities { return p.caps }
+
+func textResp(text string) *provider.Response {
+	return &provider.Response{Content: []message.ContentBlock{{Type: message.BlockText, Text: text}}, StopReason: "end_turn"}
+}
+
+func newTestStoreAndRegistry(t *testing.T) (*store.Store, *mcp.Registry) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	registry := mcp.NewRegistry(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { registry.Close() })
+	return st, registry
+}
+
+func fakeFactory(p provider.Provider) ProviderFactory {
+	return func(config.ModelConfig) (provider.Provider, error) { return p, nil }
+}
+
+func TestBuildFailsOnMissingSchemaFile(t *testing.T) {
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:   "a",
+		Model:  config.ModelConfig{Provider: "ollama", Name: "m"},
+		Output: config.OutputConfig{Schema: "./does-not-exist.json"},
+	}
+	_, err := Build(context.Background(), st, registry, cfg, fakeFactory(&scriptedProvider{}))
+	if err == nil {
+		t.Fatal("expected an error for a missing schema file")
+	}
+	if !strings.Contains(err.Error(), "does-not-exist.json") {
+		t.Fatalf("expected the error to name the schema path, got: %v", err)
+	}
+}
+
+func TestBuildFailsOnMissingSchemaFileWithoutSourceDirHint(t *testing.T) {
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:   "a",
+		Model:  config.ModelConfig{Provider: "ollama", Name: "m"},
+		Output: config.OutputConfig{Schema: "./relative.json"},
+		// SourceDir deliberately left empty, as it would be for a config
+		// reconstructed via config.Parse (e.g. the daemon or a resumed
+		// run) rather than config.Load.
+	}
+	_, err := Build(context.Background(), st, registry, cfg, fakeFactory(&scriptedProvider{}))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "no source directory") {
+		t.Fatalf("expected the error to explain the missing source directory, got: %v", err)
+	}
+}
+
+func TestBuildFailsOnUnparseableSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(schemaPath, []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:   "a",
+		Model:  config.ModelConfig{Provider: "ollama", Name: "m"},
+		Output: config.OutputConfig{Schema: schemaPath},
+	}
+	_, err := Build(context.Background(), st, registry, cfg, fakeFactory(&scriptedProvider{}))
+	if err == nil {
+		t.Fatal("expected an error for an unparseable schema")
+	}
+}
+
+func TestBuildResolvesSchemaRelativeToSourceDir(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "story-spec.json")
+	if err := os.WriteFile(schemaPath, []byte(testStorySchema), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:      "a",
+		Model:     config.ModelConfig{Provider: "ollama", Name: "m"},
+		Output:    config.OutputConfig{Schema: "story-spec.json"}, // relative
+		SourceDir: dir,
+	}
+	sp := &scriptedProvider{responses: []*provider.Response{textResp(`{"title":"x","beats":["a"]}`)}}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	state, err := eng.Step(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if state != runtime.StateCompleted {
+		t.Fatalf("expected completed (schema resolved and satisfied), got %s", state)
+	}
+}
+
+// TestBuildEndToEndSelfCorrectsWithRealSchemaValidator wires the real
+// internal/schema validator through Build into a working Engine — the
+// one place the closure seam (runtime.OutputPolicy.Validate, built in
+// compileOutputPolicy) is proven to actually connect end to end, not just
+// each side tested in isolation. Also exercises ExtractJSON on a
+// markdown-fenced first attempt, which internal/runtime's own tests
+// deliberately don't cover (they use a hand-written Validate with no
+// extraction step, to stay free of the schema-library import).
+func TestBuildEndToEndSelfCorrectsWithRealSchemaValidator(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "story-spec.json")
+	if err := os.WriteFile(schemaPath, []byte(testStorySchema), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:      "a",
+		Model:     config.ModelConfig{Provider: "ollama", Name: "m"},
+		Output:    config.OutputConfig{Schema: "story-spec.json", MaxRetries: 2},
+		SourceDir: dir,
+	}
+	sp := &scriptedProvider{responses: []*provider.Response{
+		textResp("```json\n{\"title\":\"x\"}\n```"), // fenced, missing "beats"
+		textResp(`{"title":"x","beats":["a","b"]}`), // valid
+	}}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	var state runtime.State
+	for i := 0; i < 10; i++ {
+		state, err = eng.Step(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state == runtime.StateCompleted || state == runtime.StateFailed {
+			break
+		}
+	}
+	if state != runtime.StateCompleted {
+		run, _ := st.GetRun(ctx, "run-1")
+		t.Fatalf("expected completed, got %s (error=%v)", state, run.Error)
+	}
+	if sp.calls != 2 {
+		t.Fatalf("expected the fenced-but-invalid turn to be extracted and rejected, then corrected: got %d calls", sp.calls)
+	}
+
+	msgs, err := st.ListMessages(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages (user, assistant, user-feedback, assistant), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[2].Role != message.RoleUser {
+		t.Fatalf("expected the feedback turn to be RoleUser, got %s", msgs[2].Role)
+	}
+}
+
+func TestBuildSetsNativeFromProviderCapabilities(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "story-spec.json")
+	if err := os.WriteFile(schemaPath, []byte(testStorySchema), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:      "a",
+		Model:     config.ModelConfig{Provider: "ollama", Name: "m"},
+		Output:    config.OutputConfig{Schema: "story-spec.json"},
+		SourceDir: dir,
+	}
+	sp := &scriptedProvider{
+		caps:      provider.Capabilities{StructuredOutput: true},
+		responses: []*provider.Response{textResp(`{"title":"x","beats":["a"]}`)},
+	}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	if _, err := eng.Step(ctx, "run-1"); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+
+	// This is the real assertion: Build read prov.Capabilities().
+	// StructuredOutput, set OutputPolicy.Native accordingly, and the
+	// engine's responseSchemaForRequest actually sent the compiled
+	// schema on the wire — proving the three-file wiring (config ->
+	// agent.Build -> runtime) connects, not just that the run completed.
+	if len(sp.requests) != 1 || sp.requests[0].ResponseSchema == nil {
+		t.Fatalf("expected the schema to be sent natively given StructuredOutput capability, got requests=%+v", sp.requests)
+	}
+
+	run, err := st.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.State != string(runtime.StateCompleted) {
+		t.Fatalf("expected completed, got %s (error=%v)", run.State, run.Error)
+	}
+}

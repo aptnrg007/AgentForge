@@ -30,7 +30,7 @@ func NewOllama(baseURL string) *Ollama {
 func (o *Ollama) Name() string { return "ollama" }
 
 func (o *Ollama) Capabilities() Capabilities {
-	return Capabilities{ToolUse: true}
+	return Capabilities{ToolUse: true, StructuredOutput: true}
 }
 
 // --- wire format ---
@@ -67,6 +67,12 @@ type ollamaChatRequest struct {
 	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Stream   bool            `json:"stream"`
 	Options  ollamaOptions   `json:"options,omitempty"`
+	// Format requests constrained decoding: either the literal string
+	// "json" or (what we send) a full JSON Schema object. Left unset
+	// (omitempty) whenever the engine isn't asking for native structured
+	// output, e.g. when the agent has tools registered — constrained
+	// decoding to a schema makes tool calls impossible on that turn.
+	Format json.RawMessage `json:"format,omitempty"`
 }
 
 type ollamaOptions struct {
@@ -173,6 +179,7 @@ func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
 			Temperature: r.Temperature,
 			NumPredict:  r.MaxTokens,
 		},
+		Format: r.ResponseSchema,
 	}
 
 	payload, err := json.Marshal(body)
@@ -234,6 +241,7 @@ func (o *Ollama) Stream(ctx context.Context, r Request) (Stream, error) {
 			Temperature: r.Temperature,
 			NumPredict:  r.MaxTokens,
 		},
+		Format: r.ResponseSchema,
 	}
 
 	payload, err := json.Marshal(body)

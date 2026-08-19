@@ -69,6 +69,11 @@ approvals:
   timeout: 30m
   on_timeout: deny
 
+# output:                         # optional: validate the final answer against a JSON Schema
+#   schema: ./schemas/issue-list.json
+#   on_invalid: retry              # retry | fail
+#   max_retries: 2
+
 limits:
   max_turns: 10
   max_tokens: 4096
@@ -89,6 +94,46 @@ export AGENTFORGE_MEMORY_PATH=/tmp/notes.json
 ```
 
 The two make a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction.
+
+## Structured output
+
+Point `output.schema` at a JSON Schema file and a run's final answer (not tool calls — a
+turn that calls a tool is never validated) has to conform to it before the run completes:
+
+```
+./agentforge run examples/structured-output.yaml -m "a story about a lighthouse keeper"
+```
+
+If the model's answer violates the schema, the error is fed back as a normal user turn and
+the model gets another shot — the same self-correction loop already used for a malformed
+tool call, sharing its retry counter (see `runs get`, which shows both kinds of retry in
+the trace by their message shape). Three numbers interact:
+
+| | scope | default |
+|---|---|---|
+| `limits.max_turns` | every model call in the run | 10 |
+| `output.max_retries` | consecutive schema violations | 2 |
+| (tool-call repair, not configurable) | consecutive malformed tool calls | 2 |
+
+Every retry burns a turn, so `max_turns` is the hard ceiling regardless of how generous
+`max_retries` is — a run that keeps violating its schema past `max_turns` fails with "max
+turns exceeded," not a schema error. `max_retries: 0` behaves like `on_invalid: fail`: one
+attempt, no second chance.
+
+Ollama enforces the schema natively (via `format`) when the agent has no tools registered;
+with tools, or on Anthropic (no native structured-output support yet), validation happens
+by inspecting the model's text after the fact — same guarantee, one extra round trip on a
+violation.
+
+**Structured output only gates one-shot runs** (`run`, the HTTP API) — `chat` never
+validates, since forcing every conversational reply to conform to a schema would make an
+interactive session unusable.
+
+A relative `output.schema` path resolves against the config file's own directory — but
+only when the config was loaded from a file directly (`run`, `chat`). A run resumed from
+the daemon or `runs approve`/`resume` reconstructs its config from the copy stored in
+SQLite, which has no source directory; use an absolute path if the agent might run that
+way. The error message says so if you get it wrong.
 
 ## CLI
 
@@ -126,9 +171,9 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, and an Anthropic provider alongside Ollama — same `Provider` interface, same approval/denial/resume flow, `model.provider: anthropic` is the only config change.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, an Anthropic provider alongside Ollama — same `Provider` interface, same approval/denial/resume flow, `model.provider: anthropic` is the only config change — and schema-validated structured output (`output.schema`) with automatic self-correction, native on Ollama when the agent has no tools, a validate-and-retry fallback everywhere else.
 
-Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), an OpenAI provider, structured output / schema validation, per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), an OpenAI provider, native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 
 ## Building
 

@@ -8,12 +8,15 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"agentforge/internal/config"
 	"agentforge/internal/mcp"
 	"agentforge/internal/provider"
 	"agentforge/internal/runtime"
+	"agentforge/internal/schema"
 	"agentforge/internal/store"
 )
 
@@ -76,10 +79,15 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 	// practice; treat it as "no timeout" rather than failing the build.
 	timeout, _ := time.ParseDuration(cfg.Approvals.Timeout)
 
+	outputPolicy, systemSuffix, err := compileOutputPolicy(cfg, prov)
+	if err != nil {
+		return nil, err
+	}
+
 	eng := runtime.NewEngine(st, prov, runtime.Config{
 		AgentName:   cfg.Name,
 		Model:       cfg.Model.Name,
-		System:      cfg.Instructions,
+		System:      cfg.Instructions + systemSuffix,
 		MaxTurns:    maxTurns,
 		MaxTokens:   cfg.Limits.MaxTokens,
 		Temperature: cfg.Model.Temperature,
@@ -90,6 +98,7 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 			Timeout:     timeout,
 			OnTimeout:   cfg.Approvals.OnTimeout,
 		},
+		Output: outputPolicy,
 	})
 
 	tools, err := ResolveTools(ctx, registry, cfg)
@@ -101,4 +110,57 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 	}
 
 	return eng, nil
+}
+
+// compileOutputPolicy reads and compiles cfg.Output.Schema, if set, into
+// a runtime.OutputPolicy plus the system-prompt suffix that tells the
+// model a schema is being enforced. Returns a zero OutputPolicy and an
+// empty suffix when no schema is configured.
+//
+// This lives in Build, not internal/config, deliberately: config.Parse/
+// Load are filesystem-pure beyond their own YAML file, whereas Build
+// already does I/O (MCP connections) and already turns config structs
+// into runtime policy structs (see the Approvals block above it).
+func compileOutputPolicy(cfg *config.Config, prov provider.Provider) (runtime.OutputPolicy, string, error) {
+	if cfg.Output.Schema == "" {
+		return runtime.OutputPolicy{}, "", nil
+	}
+
+	path := cfg.Output.Schema
+	if !filepath.IsAbs(path) && cfg.SourceDir != "" {
+		path = filepath.Join(cfg.SourceDir, path)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		resolved, absErr := filepath.Abs(path)
+		if absErr != nil {
+			resolved = path
+		}
+		hint := ""
+		if cfg.SourceDir == "" {
+			hint = " — this run was reconstructed from a config with no source directory (e.g. stored YAML replayed by the daemon or a resumed run), so a relative output.schema path resolves against the process's working directory instead of the original config file's; use an absolute path, or run from the config file's directory"
+		}
+		return runtime.OutputPolicy{}, "", fmt.Errorf("output.schema: %s: %w (resolved to %s)%s", cfg.Output.Schema, err, resolved, hint)
+	}
+
+	validator, err := schema.Compile(raw)
+	if err != nil {
+		return runtime.OutputPolicy{}, "", fmt.Errorf("output.schema: %s: %w", cfg.Output.Schema, err)
+	}
+
+	policy := runtime.OutputPolicy{
+		Validate: func(instance []byte) []string {
+			extracted, err := schema.ExtractJSON(string(instance))
+			if err != nil {
+				return []string{err.Error()}
+			}
+			return validator.Validate(extracted)
+		},
+		Schema:     validator.Raw(),
+		OnInvalid:  cfg.Output.OnInvalid,
+		MaxRetries: cfg.Output.MaxRetries,
+		Native:     prov.Capabilities().StructuredOutput,
+	}
+	return policy, schema.Instruction(validator.Raw()), nil
 }

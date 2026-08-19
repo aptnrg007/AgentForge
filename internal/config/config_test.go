@@ -40,6 +40,43 @@ func TestLoadEverythingDemoExample(t *testing.T) {
 	}
 }
 
+func TestLoadStructuredOutputExample(t *testing.T) {
+	cfg, err := Load("../../examples/structured-output.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Output.Schema != "./schemas/story-spec.json" {
+		t.Fatalf("output.schema = %q, want %q", cfg.Output.Schema, "./schemas/story-spec.json")
+	}
+	if cfg.Output.OnInvalid != "retry" {
+		t.Fatalf("output.on_invalid = %q, want %q", cfg.Output.OnInvalid, "retry")
+	}
+	if cfg.Output.MaxRetries != 2 {
+		t.Fatalf("output.max_retries = %d, want 2", cfg.Output.MaxRetries)
+	}
+}
+
+func TestLoadSetsSourceDirButParseDoesNot(t *testing.T) {
+	cfg, err := Load("../../examples/minimal.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SourceDir != "../../examples" {
+		t.Fatalf("SourceDir = %q, want %q", cfg.SourceDir, "../../examples")
+	}
+
+	parsed, err := Parse([]byte(`
+name: ok
+model: {provider: ollama, name: foo}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if parsed.SourceDir != "" {
+		t.Fatalf("expected Parse to leave SourceDir empty, got %q", parsed.SourceDir)
+	}
+}
+
 func TestUnknownKeyNamesTheKey(t *testing.T) {
 	_, err := Parse([]byte(`
 name: bad
@@ -197,6 +234,38 @@ name: bad
 model: {provider: anthropic, name: claude-sonnet-4-6}
 `,
 			wantErr: `api_key is required for provider "anthropic"`,
+		},
+		{
+			name: "unknown output on_invalid",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+output:
+  schema: ./schema.json
+  on_invalid: sometimes
+`,
+			wantErr: `on_invalid: unknown value "sometimes"`,
+		},
+		{
+			name: "negative output max_retries",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+output:
+  schema: ./schema.json
+  max_retries: -1
+`,
+			wantErr: "max_retries: must be >= 0",
+		},
+		{
+			name: "output on_invalid without schema",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+output:
+  on_invalid: fail
+`,
+			wantErr: "on_invalid/max_retries set without schema",
 		},
 	}
 
