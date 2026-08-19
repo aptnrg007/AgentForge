@@ -50,6 +50,14 @@ func (p *scriptedProvider) Complete(ctx context.Context, r provider.Request) (*p
 	return resp, nil
 }
 
+func (p *scriptedProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	resp, err := p.Complete(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewResponseStream(resp), nil
+}
+
 func fakeProviderFactory(responses ...*provider.Response) agent.ProviderFactory {
 	sp := &scriptedProvider{responses: responses}
 	return func(model config.ModelConfig) (provider.Provider, error) {

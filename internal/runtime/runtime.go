@@ -104,6 +104,7 @@ type Engine struct {
 	provider provider.Provider
 	tools    map[string]Tool
 	cfg      Config
+	onEvent  func(Event)
 }
 
 func NewEngine(st *store.Store, p provider.Provider, cfg Config) *Engine {
@@ -115,6 +116,21 @@ func NewEngine(st *store.Store, p provider.Provider, cfg Config) *Engine {
 
 func (e *Engine) RegisterTool(t Tool) {
 	e.tools[t.Name] = t
+}
+
+// OnEvent installs a callback that receives fine-grained progress events
+// (token, tool_call, tool_result) as a run advances. Installing one causes
+// stepModel to use the provider's Stream method instead of Complete; with
+// no callback installed, behavior is unchanged from before this existed.
+// Not safe to call concurrently with Step.
+func (e *Engine) OnEvent(fn func(Event)) {
+	e.onEvent = fn
+}
+
+func (e *Engine) emit(ev Event) {
+	if e.onEvent != nil {
+		e.onEvent(ev)
+	}
 }
 
 func (e *Engine) toolDefs() []provider.ToolDef {
@@ -279,6 +295,34 @@ func (e *Engine) resolveAwaitingApproval(ctx context.Context, runID string) (Sta
 	return StateReadyForTools, nil
 }
 
+// complete is the engine's sole path to the provider. With no event sink
+// installed it's a passthrough to Complete, unchanged from before
+// streaming existed. With a sink installed it drives Stream instead,
+// emitting an EventToken per text delta, and returns the same assembled
+// *Response either way — everything downstream of this call (repair
+// validation, approval evaluation, persistence) is streaming-agnostic.
+func (e *Engine) complete(ctx context.Context, req provider.Request) (*provider.Response, error) {
+	if e.onEvent == nil {
+		return e.provider.Complete(ctx, req)
+	}
+
+	stream, err := e.provider.Stream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	for stream.Next() {
+		if delta := stream.Delta(); delta != "" {
+			e.emit(Event{Kind: EventToken, Text: delta})
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	return stream.Response()
+}
+
 func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	if run.TurnCount >= e.cfg.MaxTurns {
 		errStr := fmt.Sprintf("max turns (%d) exceeded", e.cfg.MaxTurns)
@@ -293,7 +337,7 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		return "", err
 	}
 
-	resp, err := e.provider.Complete(ctx, provider.Request{
+	resp, err := e.complete(ctx, provider.Request{
 		Model:       e.cfg.Model,
 		System:      e.cfg.System,
 		Messages:    msgs,
@@ -372,6 +416,7 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		if approval != "auto" {
 			allAuto = false
 		}
+		e.emit(Event{Kind: EventToolCall, CallID: tu.ID, ToolName: tu.Name, Args: tu.Input})
 		if err := e.store.InsertToolCall(ctx, store.ToolCall{
 			ID:       tu.ID,
 			RunID:    run.ID,
@@ -440,6 +485,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 		if err := e.store.UpdateToolCallResult(ctx, tc.ID, resultText, isError); err != nil {
 			return "", err
 		}
+		e.emit(Event{Kind: EventToolResult, CallID: tc.ID, ToolName: tc.ToolName, Result: resultText, IsError: isError})
 		results = append(results, message.ContentBlock{
 			Type:      message.BlockToolResult,
 			ToolUseID: tc.ID,

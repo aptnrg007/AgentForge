@@ -77,6 +77,44 @@ func toToolCallDTO(tc store.ToolCall) toolCallDTO {
 	}
 }
 
+// --- SSE event payloads (POST /v1/agents/{name}/stream) ---
+//
+// These follow toolCallDTO's convention above: Args stays json.RawMessage
+// (always validated JSON by the time an event is emitted), Result stays a
+// plain string (arbitrary tool output, not necessarily JSON).
+
+type tokenEvent struct {
+	Text string `json:"text"`
+}
+
+type toolCallEvent struct {
+	CallID string          `json:"call_id"`
+	Tool   string          `json:"tool"`
+	Args   json.RawMessage `json:"args"`
+}
+
+type toolResultEvent struct {
+	CallID  string `json:"call_id"`
+	Tool    string `json:"tool"`
+	Result  string `json:"result"`
+	IsError bool   `json:"is_error,omitempty"`
+}
+
+type awaitingApprovalEvent struct {
+	RunID   string        `json:"run_id"`
+	Pending []pendingCall `json:"pending"`
+}
+
+// doneEvent is the single terminal frame for a stream, for every outcome
+// (completed, failed, cancelled) — a client reads State the same way it
+// would read it off a POST /run response, rather than needing a second
+// handler for a distinct error event.
+type doneEvent struct {
+	RunID string  `json:"run_id"`
+	State string  `json:"state"`
+	Error *string `json:"error,omitempty"`
+}
+
 type runTrace struct {
 	RunID     string            `json:"run_id"`
 	AgentName string            `json:"agent_name"`

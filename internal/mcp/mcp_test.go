@@ -107,6 +107,14 @@ func (p *scriptedProvider) Complete(ctx context.Context, r provider.Request) (*p
 	return resp, nil
 }
 
+func (p *scriptedProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	resp, err := p.Complete(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewResponseStream(resp), nil
+}
+
 func TestRuntimeCallsRealMCPTool(t *testing.T) {
 	requireNpx(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

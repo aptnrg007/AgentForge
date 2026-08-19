@@ -42,4 +42,8 @@ type Response struct {
 type Provider interface {
 	Name() string
 	Complete(ctx context.Context, r Request) (*Response, error)
+	// Stream behaves like Complete but returns the response incrementally.
+	// A provider that can't stream natively can satisfy this with
+	// NewResponseStream(resp) after computing the full response.
+	Stream(ctx context.Context, r Request) (Stream, error)
 }

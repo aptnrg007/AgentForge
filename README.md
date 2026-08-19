@@ -97,6 +97,7 @@ GET    /v1/agents                    GET /v1/agents/{name}    DELETE /v1/agents/
 GET    /v1/agents/{name}/tools       # resolved, filtered, namespaced tool list
 
 POST   /v1/agents/{name}/run         # 200 with a result, or 202 with pending approvals
+POST   /v1/agents/{name}/stream      # same, but Server-Sent Events: token/tool_call/tool_result as they happen
 GET    /v1/runs/{id}                 # full trace
 POST   /v1/runs/{id}/approve         # {call_id, decision: "approved"|"denied", reason?}
 POST   /v1/runs/{id}/resume          # drive the run forward after approving/denying
@@ -106,9 +107,9 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI, and approval gates with timeouts — plus a chat REPL for driving all of it interactively.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI, approval gates with timeouts, a chat REPL for driving all of it interactively, and SSE streaming on `/v1/agents/{name}/stream` — token deltas and tool calls as they happen, with the stream pausing cleanly (not hanging) at an approval gate.
 
-Not yet: response streaming (SSE), Anthropic/OpenAI providers, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), Anthropic/OpenAI providers, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 
 ## Building
 

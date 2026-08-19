@@ -39,6 +39,14 @@ func (p *scriptedProvider) Complete(ctx context.Context, r provider.Request) (*p
 	return resp, nil
 }
 
+func (p *scriptedProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	resp, err := p.Complete(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewResponseStream(resp), nil
+}
+
 func toolUseResponse(id, name, input string) *provider.Response {
 	return &provider.Response{
 		Content:    []message.ContentBlock{{Type: message.BlockToolUse, ID: id, Name: name, Input: json.RawMessage(input)}},

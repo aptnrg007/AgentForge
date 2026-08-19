@@ -32,6 +32,14 @@ func (f *fakeProvider) Complete(ctx context.Context, r provider.Request) (*provi
 	return resp, nil
 }
 
+func (f *fakeProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	resp, err := f.Complete(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewResponseStream(resp), nil
+}
+
 func textResponse(text string) *provider.Response {
 	return &provider.Response{
 		Content:    []message.ContentBlock{{Type: message.BlockText, Text: text}},
