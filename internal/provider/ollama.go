@@ -169,6 +169,21 @@ func newToolCallID() string {
 	return fmt.Sprintf("toolu_%x", b)
 }
 
+// ollamaFormat returns the schema to send as the request's native-format
+// constraint, or nil. Ollama's constrained decoding makes tool calls
+// impossible on the turn it's used, so it's only sent when the agent has
+// no tools registered on this request — a tool-using agent always takes
+// the validate-and-retry fallback instead, the same outcome a provider
+// with no native support at all produces. (This is Ollama's own
+// limitation, not a rule every provider shares — see openai.go, which can
+// combine the two.)
+func ollamaFormat(r Request) json.RawMessage {
+	if len(r.Tools) != 0 {
+		return nil
+	}
+	return r.ResponseSchema
+}
+
 func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
 	body := ollamaChatRequest{
 		Model:    r.Model,
@@ -179,7 +194,7 @@ func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
 			Temperature: r.Temperature,
 			NumPredict:  r.MaxTokens,
 		},
-		Format: r.ResponseSchema,
+		Format: ollamaFormat(r),
 	}
 
 	payload, err := json.Marshal(body)
@@ -241,7 +256,7 @@ func (o *Ollama) Stream(ctx context.Context, r Request) (Stream, error) {
 			Temperature: r.Temperature,
 			NumPredict:  r.MaxTokens,
 		},
-		Format: r.ResponseSchema,
+		Format: ollamaFormat(r),
 	}
 
 	payload, err := json.Marshal(body)

@@ -298,7 +298,7 @@ func TestMaxTurnsBeatsMaxRetries(t *testing.T) {
 	}
 }
 
-func TestResponseSchemaSentOnlyWhenNativeAndNoTools(t *testing.T) {
+func TestResponseSchemaSentWheneverNative(t *testing.T) {
 	ctx := context.Background()
 	schema := json.RawMessage(`{"type":"object"}`)
 
@@ -318,7 +318,13 @@ func TestResponseSchemaSentOnlyWhenNativeAndNoTools(t *testing.T) {
 		}
 	})
 
-	t.Run("native, but tools registered: schema withheld", func(t *testing.T) {
+	// Whether native enforcement is safe to combine with tool use is a
+	// per-provider decision (Ollama's constrained decoding can't do both
+	// on one request; OpenAI's response_format can) — see
+	// internal/provider/ollama_format_test.go for the withholding case.
+	// The engine itself no longer knows about that limitation: it
+	// forwards the schema whenever Native is set, tools or not.
+	t.Run("native, tools registered: schema still forwarded by the engine", func(t *testing.T) {
 		st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
 		fp := &fakeProvider{responses: []*provider.Response{textResponse(`{"title":"x","beats":["a"]}`)}}
 		eng := NewEngine(st, fp, Config{
@@ -330,8 +336,8 @@ func TestResponseSchemaSentOnlyWhenNativeAndNoTools(t *testing.T) {
 			t.Fatalf("NewRun: %v", err)
 		}
 		runToTerminal(t, eng, "run-native-tools")
-		if len(fp.requests) != 1 || fp.requests[0].ResponseSchema != nil {
-			t.Fatalf("expected no native schema when tools are registered, got requests=%+v", fp.requests)
+		if len(fp.requests) != 1 || string(fp.requests[0].ResponseSchema) != string(schema) {
+			t.Fatalf("expected the engine to still forward the schema with tools registered, got requests=%+v", fp.requests)
 		}
 	})
 

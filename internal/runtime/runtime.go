@@ -509,13 +509,14 @@ func (e *Engine) validateToolUse(tu message.ContentBlock) string {
 }
 
 // responseSchemaForRequest returns the schema to send for native
-// enforcement, or nil. Only sent when the provider can enforce it and
-// the agent has no tools registered: constrained decoding to a schema
-// makes tool calls impossible on that turn, so a tool-using agent always
-// takes the validate-and-retry fallback instead, exactly like a provider
-// with no native support at all.
+// enforcement, or nil. Whether native enforcement is safe to combine with
+// tool use varies by provider — Ollama's constrained decoding makes tool
+// calls impossible on that turn, OpenAI's response_format composes with
+// tools on the same request — so that decision belongs to each Provider,
+// not here; the engine just forwards the schema whenever the provider has
+// advertised it can enforce it at all.
 func (e *Engine) responseSchemaForRequest() json.RawMessage {
-	if !e.cfg.Output.Native || len(e.tools) != 0 {
+	if !e.cfg.Output.Native {
 		return nil
 	}
 	return e.cfg.Output.Schema

@@ -1,0 +1,34 @@
+name: openai-demo
+
+model:
+  provider: openai
+  name: gpt-5-mini
+  temperature: 0.2
+  api_key: ${OPENAI_API_KEY}
+  # base_url is optional — omit it for real OpenAI. Point it at any
+  # OpenAI-compatible endpoint instead and everything else here is
+  # unchanged (a local server generally needs no api_key at all):
+  #   base_url: https://api.groq.com/openai/v1        # Groq
+  #   base_url: https://api.together.xyz/v1            # Together
+  #   base_url: http://localhost:8000/v1                # vLLM / llama.cpp / LM Studio
+
+instructions: |
+  You are a helpful assistant with access to a couple of demo tools.
+  Use them when the user's request calls for it.
+
+mcp:
+  - name: everything
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+
+tools:
+  - "everything.echo"
+  - "everything.get-sum"
+
+approvals:
+  require:
+    - "everything.get-sum"
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

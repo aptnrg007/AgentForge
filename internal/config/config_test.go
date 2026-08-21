@@ -170,6 +170,23 @@ model:
 	}
 }
 
+// TestOpenAIWithBaseURLDoesNotRequireAPIKey confirms the exemption for a
+// local/self-hosted OpenAI-compatible server (vLLM, llama.cpp, LM
+// Studio), which typically ignores auth entirely — only real OpenAI
+// (base_url empty) requires a key.
+func TestOpenAIWithBaseURLDoesNotRequireAPIKey(t *testing.T) {
+	_, err := Parse([]byte(`
+name: ok
+model:
+  provider: openai
+  name: local-model
+  base_url: http://localhost:8000/v1
+`))
+	if err != nil {
+		t.Fatalf("expected no error for openai with base_url and no api_key: %v", err)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -234,6 +251,14 @@ name: bad
 model: {provider: anthropic, name: claude-sonnet-4-6}
 `,
 			wantErr: `api_key is required for provider "anthropic"`,
+		},
+		{
+			name: "openai without api_key or base_url",
+			yaml: `
+name: bad
+model: {provider: openai, name: gpt-5}
+`,
+			wantErr: `api_key is required for provider "openai"`,
 		},
 		{
 			name: "unknown output on_invalid",

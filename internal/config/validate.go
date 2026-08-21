@@ -70,6 +70,14 @@ func (m ModelConfig) validate() error {
 	if m.Provider == "anthropic" && m.APIKey == "" {
 		return fmt.Errorf("api_key is required for provider \"anthropic\"")
 	}
+	// openai only requires a key when base_url is empty (real OpenAI). A
+	// base_url pointing at a local/self-hosted OpenAI-compatible server
+	// (vLLM, llama.cpp, LM Studio) typically ignores auth entirely, and
+	// requiring a key there would make "point it at your local server"
+	// need a fake credential for no reason.
+	if m.Provider == "openai" && m.APIKey == "" && m.BaseURL == "" {
+		return fmt.Errorf("api_key is required for provider \"openai\" (unless base_url points at a server that doesn't need one)")
+	}
 	return nil
 }
 

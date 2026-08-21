@@ -35,6 +35,8 @@ func DefaultProviderFactory(model config.ModelConfig) (provider.Provider, error)
 		return provider.NewOllama(model.BaseURL), nil
 	case "anthropic":
 		return provider.NewAnthropic(model.APIKey, model.BaseURL), nil
+	case "openai":
+		return provider.NewOpenAI(model.APIKey, model.BaseURL), nil
 	default:
 		return nil, fmt.Errorf("model.provider %q not yet supported", model.Provider)
 	}

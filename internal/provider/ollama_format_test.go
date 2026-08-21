@@ -59,6 +59,30 @@ func TestOllamaCompleteOmitsFormatWhenNoResponseSchema(t *testing.T) {
 	}
 }
 
+// TestOllamaWithholdsFormatWhenToolsPresent pins the arrival point of the
+// no-tools gate: it used to live in internal/runtime (a provider-agnostic
+// engine knowing an Ollama-specific limitation), and now lives here,
+// because constrained decoding makes tool calls impossible on the turn
+// it's used — a limitation specific to Ollama, not shared by every
+// provider (see openai_test.go, which sends both on one request).
+func TestOllamaWithholdsFormatWhenToolsPresent(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	var captured map[string]any
+	o := newTestOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaChatResponse{Done: true})
+	})
+
+	req := Request{Model: "m", ResponseSchema: schema, Tools: []ToolDef{{Name: "t", InputSchema: json.RawMessage(`{}`)}}}
+	if _, err := o.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, ok := captured["format"]; ok {
+		t.Fatalf("expected no format field on the request when tools are registered, got %v", captured["format"])
+	}
+}
+
 func TestOllamaStreamSendsFormatWhenResponseSchemaSet(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object"}`)
 	var captured map[string]any

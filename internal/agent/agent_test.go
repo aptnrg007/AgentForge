@@ -15,7 +15,7 @@ func TestDefaultProviderFactory(t *testing.T) {
 	}{
 		{provider: "ollama", wantName: "ollama"},
 		{provider: "anthropic", wantName: "anthropic"},
-		{provider: "openai", wantErr: true}, // accepted by config validation, not yet implemented
+		{provider: "openai", wantName: "openai"},
 		{provider: "made-up", wantErr: true},
 	}
 
@@ -49,5 +49,19 @@ func TestDefaultProviderFactoryPassesAPIKeyToAnthropic(t *testing.T) {
 	}
 	if a.APIKey != "sk-ant-test" {
 		t.Fatalf("APIKey = %q, want %q", a.APIKey, "sk-ant-test")
+	}
+}
+
+func TestDefaultProviderFactoryPassesAPIKeyAndBaseURLToOpenAI(t *testing.T) {
+	p, err := DefaultProviderFactory(config.ModelConfig{Provider: "openai", Name: "gpt-5", APIKey: "sk-test", BaseURL: "https://api.groq.com/openai/v1"})
+	if err != nil {
+		t.Fatalf("DefaultProviderFactory: %v", err)
+	}
+	o, ok := p.(*provider.OpenAI)
+	if !ok {
+		t.Fatalf("expected *provider.OpenAI, got %T", p)
+	}
+	if o.APIKey != "sk-test" || o.BaseURL != "https://api.groq.com/openai/v1" {
+		t.Fatalf("expected api_key/base_url to pass through, got %+v", o)
 	}
 }

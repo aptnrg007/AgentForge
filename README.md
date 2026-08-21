@@ -41,10 +41,13 @@ approval needed (1/1): everything.get-sum
 name: github-assistant
 
 model:
-  provider: ollama              # ollama | anthropic (openai comes later)
+  provider: ollama              # ollama | anthropic | openai
   name: qwen2.5-coder:14b
   temperature: 0.2
-  # api_key: ${ANTHROPIC_API_KEY}   # anthropic only; required, same ${VAR} resolution as GITHUB_TOKEN below
+  # api_key: ${ANTHROPIC_API_KEY}   # anthropic/openai; same ${VAR} resolution as GITHUB_TOKEN below
+  # base_url: https://api.groq.com/openai/v1   # openai only — any OpenAI-compatible endpoint
+  #                                             # (Groq, Together, vLLM, llama.cpp, ...); api_key
+  #                                             # is only required when base_url is left unset
 
 instructions: |
   You are a GitHub assistant. Use the available tools to answer questions
@@ -79,7 +82,7 @@ limits:
   max_tokens: 4096
 ```
 
-Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic` without an `api_key` at all fails the same way, before any request goes out. See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point either at Anthropic instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
+Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic or OpenAI instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
 
 ## Real agents
 
@@ -120,10 +123,14 @@ Every retry burns a turn, so `max_turns` is the hard ceiling regardless of how g
 turns exceeded," not a schema error. `max_retries: 0` behaves like `on_invalid: fail`: one
 attempt, no second chance.
 
-Ollama enforces the schema natively (via `format`) when the agent has no tools registered;
-with tools, or on Anthropic (no native structured-output support yet), validation happens
-by inspecting the model's text after the fact — same guarantee, one extra round trip on a
-violation.
+Native enforcement varies by provider: Ollama enforces the schema (via `format`) only when
+the agent has no tools registered — constrained decoding makes tool calls impossible on
+that turn, so a tool-using agent on Ollama always takes the fallback below, same as
+Anthropic (no native support at all yet). OpenAI is the exception: `response_format`
+composes with `tools` on the same request, so an OpenAI-backed agent gets native
+enforcement *and* tool use together — the one combination nothing else here can do yet.
+Wherever native enforcement doesn't apply, validation happens by inspecting the model's
+text after the fact instead — same guarantee, one extra round trip on a violation.
 
 **Structured output only gates one-shot runs** (`run`, the HTTP API) — `chat` never
 validates, since forcing every conversational reply to conform to a schema would make an
@@ -150,6 +157,22 @@ agentforge runs resume <id> [--server URL]                         # continue a 
 
 `run` and the `agents`/`runs` commands work standalone against a local SQLite file (`~/.agentforge/agentforge.db` by default, override with `--db`), or against a running daemon via `--server` — same config, same behavior, either way. `agentforge run` exits non-zero when the run fails or hits an unhandled error, so it's safe to chain in a script; a run that pauses for approval prints the pending call IDs and exits 0 — decide with `runs approve`/`deny`.
 
+`run`, `runs approve`, `runs deny`, and `runs resume` all take `-m`/`--message` as `@path`
+to read it from a file instead of the command line (`run script-agent.yaml -m
+@beat-sheet.txt` — `-m` itself is `run`-only, since the others are just continuing an
+in-progress run), and `--output-format json --output PATH` to write a
+`{run_id, state, output, tool_calls_count, duration_ms}` envelope instead of the usual
+human-readable trace — `output` is a nested JSON value when the agent's `output.schema` is
+set, a plain string otherwise:
+
+```
+./agentforge run examples/structured-output.yaml -m @prompt.txt --output-format json --output spec.json
+jq .output.beats spec.json
+```
+
+In JSON mode, progress lines move to stderr so stdout carries only the envelope and can be
+piped straight into `jq`; in text mode (the default) nothing changes.
+
 ## HTTP API
 
 `agentforge serve` binds `127.0.0.1:8080` by default. There's no auth in v0.1 — keep it on localhost.
@@ -171,9 +194,9 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, an Anthropic provider alongside Ollama — same `Provider` interface, same approval/denial/resume flow, `model.provider: anthropic` is the only config change — and schema-validated structured output (`output.schema`) with automatic self-correction, native on Ollama when the agent has no tools, a validate-and-retry fallback everywhere else.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
 
-Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), an OpenAI provider, native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 
 ## Building
 
