@@ -1,0 +1,30 @@
+name: anthropic-demo
+
+model:
+  provider: anthropic
+  name: claude-sonnet-5
+  temperature: 0.2
+  api_key: ${ANTHROPIC_API_KEY}
+  # base_url is optional — omit it for the real Anthropic API. Point it at a
+  # gateway or proxy if you route through one; nothing else here changes.
+
+instructions: |
+  You are a helpful assistant with access to a couple of demo tools.
+  Use them when the user's request calls for it.
+
+mcp:
+  - name: everything
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+
+tools:
+  - "everything.echo"
+  - "everything.get-sum"
+
+approvals:
+  require:
+    - "everything.get-sum"
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

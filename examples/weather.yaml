@@ -1,0 +1,45 @@
+name: weather
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You are a weather assistant. To answer a question about a place:
+    1. Geocode it:
+       https://geocoding-api.open-meteo.com/v1/search?name=<city>&count=1
+       Take latitude and longitude from results[0].
+    2. Fetch current conditions:
+       https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>
+         &current=temperature_2m,weather_code
+  Report the temperature in Celsius and translate the WMO weather_code into
+  plain words. If geocoding returns no results, say so rather than guessing
+  coordinates.
+
+mcp:
+  - name: web
+    transport: stdio
+    # The fetch server is Python, not npm, so this needs uv:
+    #   curl -LsSf https://astral.sh/uv/install.sh | sh
+    # --ignore-robots-txt: api.open-meteo.com serves "Disallow: /" to keep
+    # search engines out of API responses. This is a free, key-less API
+    # meant to be called programmatically, and ordinary API clients never
+    # consult robots.txt — the fetch server only does because it is a
+    # general-purpose web fetcher. Do not carry this flag over to an agent
+    # that browses arbitrary sites; article-digest.yaml deliberately omits it.
+    command: ["uvx", "mcp-server-fetch", "--ignore-robots-txt"]
+
+tools:
+  - "web.fetch"
+
+tool_policy:
+  # A network fetch is precisely the call that can hang forever. 20s is
+  # generous for these two endpoints, and on_timeout: error lets the model
+  # retry or explain instead of the run dying.
+  timeout: 20s
+  on_timeout: error
+
+limits:
+  max_turns: 10        # geocode + forecast + answer is three turns minimum
+  max_tokens: 1024

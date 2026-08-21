@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Digest",
+  "type": "object",
+  "required": ["title", "summary", "key_points", "source_url"],
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "The page's title."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Two or three sentences."
+    },
+    "key_points": {
+      "type": "array",
+      "description": "The main takeaways, in your own words.",
+      "minItems": 1,
+      "maxItems": 7,
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_url": {
+      "type": "string",
+      "description": "The URL that was fetched."
+    }
+  }
+}

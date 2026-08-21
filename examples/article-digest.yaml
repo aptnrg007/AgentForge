@@ -1,0 +1,36 @@
+name: article-digest
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You summarize a web page into a structured digest. Fetch the URL the user
+  gives you, then answer with JSON matching the schema. Write key_points in
+  your own words rather than quoting at length. If the fetch fails, say so
+  instead of inventing content.
+
+mcp:
+  - name: web
+    transport: stdio
+    # Same server as weather.yaml, deliberately WITHOUT --ignore-robots-txt:
+    # this agent visits whatever URL it is handed, so honoring each site's
+    # robots.txt is the right default.
+    command: ["uvx", "mcp-server-fetch"]
+
+tools:
+  - "web.fetch"
+
+output:
+  schema: ./schemas/digest.json
+  on_invalid: retry
+  max_retries: 2
+
+tool_policy:
+  timeout: 30s
+  on_timeout: error
+
+limits:
+  max_turns: 12
+  max_tokens: 2048

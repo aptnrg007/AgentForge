@@ -383,6 +383,50 @@ tool_policy:
 	}
 }
 
+func TestLoadWeatherExample(t *testing.T) {
+	cfg, err := Load("../../examples/weather.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCP) != 1 || cfg.MCP[0].Name != "web" {
+		t.Fatalf("unexpected mcp servers: %+v", cfg.MCP)
+	}
+	if cfg.ToolPolicy.Timeout != "20s" {
+		t.Errorf("tool_policy.timeout = %q, want %q", cfg.ToolPolicy.Timeout, "20s")
+	}
+	if cfg.ToolPolicy.OnTimeout != "error" {
+		t.Errorf("tool_policy.on_timeout = %q, want %q", cfg.ToolPolicy.OnTimeout, "error")
+	}
+}
+
+func TestLoadArticleDigestExample(t *testing.T) {
+	cfg, err := Load("../../examples/article-digest.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCP) == 0 {
+		t.Fatalf("expected at least one mcp server, got none")
+	}
+	if cfg.Output.Schema != "./schemas/digest.json" {
+		t.Fatalf("output.schema = %q, want %q", cfg.Output.Schema, "./schemas/digest.json")
+	}
+}
+
+func TestLoadAnthropicExample(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	cfg, err := Load("../../examples/anthropic.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Model.Provider != "anthropic" {
+		t.Errorf("model.provider = %q, want %q", cfg.Model.Provider, "anthropic")
+	}
+	if cfg.Model.APIKey != "sk-ant-test" {
+		t.Errorf("model.api_key = %q, want interpolated %q", cfg.Model.APIKey, "sk-ant-test")
+	}
+}
+
 func TestLoadToolPolicy(t *testing.T) {
 	cfg, err := Parse([]byte(`
 name: ok

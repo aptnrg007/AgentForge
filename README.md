@@ -89,11 +89,11 @@ limits:
   max_tokens: 4096
 ```
 
-Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic or OpenAI instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
+Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`, or `examples/anthropic.yaml` for the matching Anthropic config). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic or OpenAI instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
 
 ## Real agents
 
-Two configs against real, credential-free MCP servers, for actually using this rather than kicking the tires:
+Configs against real, credential-free MCP servers, for actually using this rather than kicking the tires:
 
 ```
 export AGENTFORGE_FS_ROOT=$(pwd)
@@ -101,9 +101,14 @@ export AGENTFORGE_FS_ROOT=$(pwd)
 
 export AGENTFORGE_MEMORY_PATH=/tmp/notes.json
 ./agentforge run examples/notes-assistant.yaml -m "remember that I like tea"   # @modelcontextprotocol/server-memory, ungated
+
+./agentforge run examples/weather.yaml -m "what's the weather in Lisbon?"      # mcp-server-fetch + Open-Meteo, no key
+./agentforge run examples/article-digest.yaml -m "digest https://modelcontextprotocol.io/introduction"   # same server, structured output
 ```
 
-The two make a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction.
+The filesystem/notes pair makes a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction.
+
+The weather and digest agents both use the official reference fetch server, which is Python rather than npm — install `uv` once (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and `uvx` runs it with no separate install step. They also make their own contrast, over the same server: `weather.yaml` passes `--ignore-robots-txt` because Open-Meteo's API disallows crawlers by default even though it's a free, key-less API meant for exactly this kind of programmatic call; `article-digest.yaml` fetches whatever URL a user hands it, so it deliberately leaves that flag off and honors each site's robots.txt like a normal browser would.
 
 ## Structured output
 
@@ -113,6 +118,10 @@ turn that calls a tool is never validated) has to conform to it before the run c
 ```
 ./agentforge run examples/structured-output.yaml -m "a story about a lighthouse keeper"
 ```
+
+`examples/structured-output.yaml` has no tools, to keep the example minimal — for the more
+common shape, tools *and* a schema together, see `examples/article-digest.yaml`, which
+fetches a page and answers with structured JSON.
 
 If the model's answer violates the schema, the error is fed back as a normal user turn and
 the model gets another shot — the same self-correction loop already used for a malformed
@@ -177,6 +186,11 @@ A timed-out call also forces the MCP server it belongs to to reconnect on its ne
 request mid-flight would desync a stdio JSON-RPC stream), so a tool that repeatedly times
 out restarts its server each time.
 
+`examples/weather.yaml` is a live example: it sets `tool_policy.timeout: 20s` around a
+web-fetch tool, exactly the kind of call that can hang. Drop it to `1ms` and rerun to
+watch a run survive its own tool timing out — `runs get` shows the call as an error
+reading `tool "web.fetch" timed out after 1ms` instead of the run hanging or failing.
+
 `limits.timeout` is parsed and validated but not yet enforced — a separate, still-open gap.
 
 ## CLI
@@ -231,9 +245,9 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
 
-Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), a run-level deadline (`limits.timeout` is validated but not yet enforced), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 
 ## Building
 
