@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"agentforge/internal/agent"
 	"agentforge/internal/config"
@@ -18,33 +19,41 @@ import (
 // config file path, so the agent's YAML has to come back out of the
 // store. Takes a ProviderFactory (rather than always using
 // agent.DefaultProviderFactory) so tests can inject a fake instead of
-// hitting a real Ollama.
-func buildEngineFromStore(ctx context.Context, st *store.Store, registry *mcp.Registry, runID string, pf agent.ProviderFactory) (*runtime.Engine, *store.Run, error) {
+// hitting a real Ollama. Also returns the parsed *config.Config — the
+// caller needs cfg.Output.Schema != "" (whether this run's config sets a
+// schema) to decide the JSON envelope's `output` type, and reconstructing
+// it a second time would mean parsing the same YAML twice.
+func buildEngineFromStore(ctx context.Context, st *store.Store, registry *mcp.Registry, runID string, pf agent.ProviderFactory) (*runtime.Engine, *store.Run, *config.Config, error) {
 	run, err := st.GetRun(ctx, runID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	ag, err := st.GetAgent(ctx, run.AgentName)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cfg, err := config.Parse([]byte(ag.YAML))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	eng, err := agent.Build(ctx, st, registry, cfg, pf)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return eng, run, nil
+	return eng, run, cfg, nil
 }
 
 // driveLocalRun steps eng until runID reaches a stop point (completed,
-// failed, cancelled, or awaiting_approval), printing progress as it goes.
-// It returns a non-nil error for a failed run instead of only printing to
-// stderr, so a script chaining on `agentforge run`/`runs resume` sees a
-// non-zero exit code when the run actually failed.
-func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, runID string) error {
+// failed, cancelled, or awaiting_approval), then emits the outcome in the
+// requested format. It returns a non-nil error for a failed run instead
+// of only printing to stderr, so a script chaining on `agentforge
+// run`/`runs resume` sees a non-zero exit code when the run actually
+// failed. schemaSet is the owning agent's cfg.Output.Schema != "" — see
+// buildEngineFromStore — used only to decide the JSON envelope's `output`
+// type; it has no effect on text-mode output.
+func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, runID string, o outputOptions, schemaSet bool) error {
+	start := time.Now()
+
 	for {
 		state, err := eng.Step(ctx, runID)
 		if err != nil {
@@ -57,33 +66,42 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 			if err != nil {
 				return err
 			}
-			fmt.Printf("run %s is awaiting approval:\n", runID)
-			for _, tc := range pending {
-				fmt.Printf("  %s  %s(%s)\n", tc.ID, tc.ToolName, tc.ArgsJSON)
+			pendingRows := make([]remotePendingCall, len(pending))
+			for i, tc := range pending {
+				pendingRows[i] = remotePendingCall{CallID: tc.ID, Tool: tc.ToolName, Args: []byte(tc.ArgsJSON)}
 			}
-			fmt.Printf("decide with: agentforge runs approve|deny %s <call-id>\n", runID)
-			return nil
+			return emitOutcome(o, runResult{
+				RunID: runID, State: string(state), Pending: pendingRows,
+				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+			})
 
 		case runtime.StateCompleted:
 			msgs, err := st.ListMessages(ctx, runID)
 			if err != nil {
 				return err
 			}
-			printMessages(msgs)
-			return nil
+			return emitOutcome(o, runResult{
+				RunID: runID, State: string(state), Messages: msgs,
+				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+			})
 
 		case runtime.StateFailed:
 			msgs, mErr := st.ListMessages(ctx, runID)
-			if mErr == nil {
-				printMessages(msgs)
-			}
-			run, err := st.GetRun(ctx, runID)
-			if err != nil {
-				return err
+			run, gErr := st.GetRun(ctx, runID)
+			if gErr != nil {
+				return gErr
 			}
 			errStr := "unknown error"
 			if run.Error != nil {
 				errStr = *run.Error
+			}
+			if mErr == nil {
+				if err := emitOutcome(o, runResult{
+					RunID: runID, State: string(state), Messages: msgs, Error: &errStr,
+					DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+				}); err != nil {
+					return err
+				}
 			}
 			return fmt.Errorf("run %s failed: %s", runID, errStr)
 
@@ -92,4 +110,15 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 		}
 		// ready_for_model / ready_for_tools: keep stepping.
 	}
+}
+
+// emitOutcome resolves --output's target (stdout or a file) and writes
+// res to it in the requested format, closing the target afterward.
+func emitOutcome(o outputOptions, res runResult) error {
+	w, closeW, err := outputTarget(o)
+	if err != nil {
+		return err
+	}
+	defer closeW()
+	return emitRunResult(w, o, res)
 }

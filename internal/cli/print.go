@@ -2,21 +2,27 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"agentforge/internal/message"
 )
 
-func printMessages(msgs []message.Message) {
+// printMessages writes msgs to w. Takes an io.Writer (rather than always
+// stdout) so --output/--output-format can redirect a text-mode trace to a
+// file or keep it off stdout in JSON mode; every pre-existing caller that
+// still wants stdout passes os.Stdout explicitly.
+func printMessages(w io.Writer, msgs []message.Message) {
 	for _, m := range msgs {
 		for _, b := range m.Content {
 			switch b.Type {
 			case message.BlockText:
-				fmt.Printf("%s: %s\n", m.Role, b.Text)
+				fmt.Fprintf(w, "%s: %s\n", m.Role, b.Text)
 			case message.BlockToolUse:
-				fmt.Printf("%s: tool_use %s(%s)\n", m.Role, b.Name, string(b.Input))
+				fmt.Fprintf(w, "%s: tool_use %s(%s)\n", m.Role, b.Name, string(b.Input))
 			case message.BlockToolResult:
-				fmt.Printf("%s: tool_result[%s] %s\n", m.Role, b.ToolUseID, b.Content)
+				fmt.Fprintf(w, "%s: tool_result[%s] %s\n", m.Role, b.ToolUseID, b.Content)
 			}
 		}
 	}
@@ -61,7 +67,7 @@ func printRunTrace(id, state string, turnCount int, errStr *string, msgs []messa
 		fmt.Println("error:", *errStr)
 	}
 	printToolCalls(calls)
-	printMessages(msgs)
+	printMessages(os.Stdout, msgs)
 }
 
 // runRow is the print layer's view of a run for `runs list`, common to

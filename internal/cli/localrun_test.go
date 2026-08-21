@@ -82,12 +82,12 @@ func TestBuildEngineFromStoreDrivesToCompletion(t *testing.T) {
 	registry := newTestRegistry()
 	defer registry.Close()
 
-	eng, run, err := buildEngineFromStore(ctx, st, registry, "run-complete", fakeProviderFactory(sp))
+	eng, run, _, err := buildEngineFromStore(ctx, st, registry, "run-complete", fakeProviderFactory(sp))
 	if err != nil {
 		t.Fatalf("buildEngineFromStore: %v", err)
 	}
 
-	if err := driveLocalRun(ctx, st, eng, run.ID); err != nil {
+	if err := driveLocalRun(ctx, st, eng, run.ID, outputOptions{}, false); err != nil {
 		t.Fatalf("driveLocalRun: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestBuildEngineFromStoreSurfacesPendingApprovalWithoutExecuting(t *testing.
 	registry := newTestRegistry()
 	defer registry.Close()
 
-	eng, run, err := buildEngineFromStore(ctx, st, registry, "run-pending", fakeProviderFactory(sp))
+	eng, run, _, err := buildEngineFromStore(ctx, st, registry, "run-pending", fakeProviderFactory(sp))
 	if err != nil {
 		t.Fatalf("buildEngineFromStore: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBuildEngineFromStoreSurfacesPendingApprovalWithoutExecuting(t *testing.
 		},
 	})
 
-	if err := driveLocalRun(ctx, st, eng, run.ID); err != nil {
+	if err := driveLocalRun(ctx, st, eng, run.ID, outputOptions{}, false); err != nil {
 		t.Fatalf("driveLocalRun: %v", err)
 	}
 
@@ -158,12 +158,12 @@ func TestBuildEngineFromStoreFailedRunReturnsError(t *testing.T) {
 	registry := newTestRegistry()
 	defer registry.Close()
 
-	eng, run, err := buildEngineFromStore(ctx, st, registry, "run-fail", fakeProviderFactory(sp))
+	eng, run, _, err := buildEngineFromStore(ctx, st, registry, "run-fail", fakeProviderFactory(sp))
 	if err != nil {
 		t.Fatalf("buildEngineFromStore: %v", err)
 	}
 
-	if err := driveLocalRun(ctx, st, eng, run.ID); err == nil {
+	if err := driveLocalRun(ctx, st, eng, run.ID, outputOptions{}, false); err == nil {
 		t.Fatal("expected driveLocalRun to return a non-nil error for a failed run")
 	}
 }
@@ -180,7 +180,7 @@ func TestApproveThenDriveExecutesAndCompletes(t *testing.T) {
 	registry := newTestRegistry()
 	defer registry.Close()
 
-	eng, run, err := buildEngineFromStore(ctx, st, registry, "run-approve", fakeProviderFactory(sp))
+	eng, run, _, err := buildEngineFromStore(ctx, st, registry, "run-approve", fakeProviderFactory(sp))
 	if err != nil {
 		t.Fatalf("buildEngineFromStore: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestApproveThenDriveExecutesAndCompletes(t *testing.T) {
 			return "ok", nil
 		},
 	})
-	if err := driveLocalRun(ctx, st, eng, run.ID); err != nil {
+	if err := driveLocalRun(ctx, st, eng, run.ID, outputOptions{}, false); err != nil {
 		t.Fatalf("driveLocalRun (first pass): %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestApproveThenDriveExecutesAndCompletes(t *testing.T) {
 	if _, err := eng.RecordApproval(ctx, run.ID, "call_1", "approved", "cli", ""); err != nil {
 		t.Fatalf("RecordApproval: %v", err)
 	}
-	if err := driveLocalRun(ctx, st, eng, run.ID); err != nil {
+	if err := driveLocalRun(ctx, st, eng, run.ID, outputOptions{}, false); err != nil {
 		t.Fatalf("driveLocalRun (after approval): %v", err)
 	}
 

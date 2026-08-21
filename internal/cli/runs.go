@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +20,7 @@ func newRunsCmd() *cobra.Command {
 	var agentFilter string
 	var limit int
 	var reason string
+	var approveOut, denyOut, resumeOut outputOptions
 
 	list := &cobra.Command{
 		Use:   "list",
@@ -45,7 +47,10 @@ func newRunsCmd() *cobra.Command {
 		Short: "Approve a pending tool call and continue the run",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runsDecide(cmd.Context(), server, dbPath, args[0], args[1], "approved", reason)
+			if err := approveOut.validate(); err != nil {
+				return err
+			}
+			return runsDecide(cmd.Context(), server, dbPath, args[0], args[1], "approved", reason, approveOut)
 		},
 	}
 	deny := &cobra.Command{
@@ -53,20 +58,29 @@ func newRunsCmd() *cobra.Command {
 		Short: "Deny a pending tool call and continue the run",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runsDecide(cmd.Context(), server, dbPath, args[0], args[1], "denied", reason)
+			if err := denyOut.validate(); err != nil {
+				return err
+			}
+			return runsDecide(cmd.Context(), server, dbPath, args[0], args[1], "denied", reason, denyOut)
 		},
 	}
 	approve.Flags().StringVar(&reason, "reason", "", "reason recorded alongside the decision")
 	deny.Flags().StringVar(&reason, "reason", "", "reason recorded alongside the decision")
+	addOutputFlags(approve, &approveOut)
+	addOutputFlags(deny, &denyOut)
 
 	resume := &cobra.Command{
 		Use:   "resume <run-id>",
 		Short: "Continue a run whose pending calls have already been decided",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runsResume(cmd.Context(), server, dbPath, args[0])
+			if err := resumeOut.validate(); err != nil {
+				return err
+			}
+			return runsResume(cmd.Context(), server, dbPath, args[0], resumeOut)
 		},
 	}
+	addOutputFlags(resume, &resumeOut)
 
 	cmd := &cobra.Command{Use: "runs", Short: "Inspect and drive runs"}
 	cmd.PersistentFlags().StringVar(&server, "server", "", "daemon URL, e.g. http://localhost:8080 (defaults to the local --db store)")
@@ -160,7 +174,7 @@ func runsGet(ctx context.Context, server, dbPath, id string) error {
 // runsDecide records an approve/deny decision on one pending call, then
 // continues driving the run — the CLI path the README's approval-gate
 // story previously had no way to complete outside `agentforge chat`.
-func runsDecide(ctx context.Context, server, dbPath, runID, callID, decision, reason string) error {
+func runsDecide(ctx context.Context, server, dbPath, runID, callID, decision, reason string, o outputOptions) error {
 	if server != "" {
 		reqBody, err := json.Marshal(map[string]string{"call_id": callID, "decision": decision, "reason": reason})
 		if err != nil {
@@ -170,12 +184,13 @@ func runsDecide(ctx context.Context, server, dbPath, runID, callID, decision, re
 		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/approve", "application/json", reqBody, &result); err != nil {
 			return err
 		}
-		fmt.Printf("%s: %s\n", decision, callID)
+		fmt.Fprintf(progressWriter(o), "%s: %s\n", decision, callID)
+		start := time.Now()
 		var run remoteRun
 		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, &run); err != nil {
 			return err
 		}
-		return printRemoteRunOutcome(run)
+		return emitRemoteRunOutcome(run, o, server, false, time.Since(start))
 	}
 
 	if err := ensureDBDir(dbPath); err != nil {
@@ -190,25 +205,26 @@ func runsDecide(ctx context.Context, server, dbPath, runID, callID, decision, re
 	registry := mcp.NewRegistry(slog.Default())
 	defer registry.Close()
 
-	eng, run, err := buildEngineFromStore(ctx, st, registry, runID, agent.DefaultProviderFactory)
+	eng, run, cfg, err := buildEngineFromStore(ctx, st, registry, runID, agent.DefaultProviderFactory)
 	if err != nil {
 		return err
 	}
 	if _, err := eng.RecordApproval(ctx, run.ID, callID, decision, "cli", reason); err != nil {
 		return err
 	}
-	fmt.Printf("%s: %s\n", decision, callID)
+	fmt.Fprintf(progressWriter(o), "%s: %s\n", decision, callID)
 
-	return driveLocalRun(ctx, st, eng, run.ID)
+	return driveLocalRun(ctx, st, eng, run.ID, o, cfg.Output.Schema != "")
 }
 
-func runsResume(ctx context.Context, server, dbPath, runID string) error {
+func runsResume(ctx context.Context, server, dbPath, runID string, o outputOptions) error {
 	if server != "" {
+		start := time.Now()
 		var run remoteRun
 		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, &run); err != nil {
 			return err
 		}
-		return printRemoteRunOutcome(run)
+		return emitRemoteRunOutcome(run, o, server, false, time.Since(start))
 	}
 
 	if err := ensureDBDir(dbPath); err != nil {
@@ -223,9 +239,9 @@ func runsResume(ctx context.Context, server, dbPath, runID string) error {
 	registry := mcp.NewRegistry(slog.Default())
 	defer registry.Close()
 
-	eng, run, err := buildEngineFromStore(ctx, st, registry, runID, agent.DefaultProviderFactory)
+	eng, run, cfg, err := buildEngineFromStore(ctx, st, registry, runID, agent.DefaultProviderFactory)
 	if err != nil {
 		return err
 	}
-	return driveLocalRun(ctx, st, eng, run.ID)
+	return driveLocalRun(ctx, st, eng, run.ID, o, cfg.Output.Schema != "")
 }
