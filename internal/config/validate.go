@@ -42,6 +42,9 @@ func (c *Config) validate() error {
 	if err := c.Output.validate(); err != nil {
 		return fmt.Errorf("output: %w", err)
 	}
+	if err := c.ToolPolicy.validate(); err != nil {
+		return fmt.Errorf("tool_policy: %w", err)
+	}
 	switch c.Session.Type {
 	case "", "none", "sqlite":
 	default:
@@ -144,6 +147,47 @@ func (o OutputConfig) validate() error {
 	}
 	if o.Schema == "" && (o.OnInvalid != "" || o.MaxRetries != 0) {
 		return fmt.Errorf("on_invalid/max_retries set without schema")
+	}
+	return nil
+}
+
+func (p ToolPolicyConfig) validate() error {
+	switch p.OnTimeout {
+	case "", "error", "fail":
+	default:
+		return fmt.Errorf("on_timeout: unknown value %q", p.OnTimeout)
+	}
+	if p.Timeout == "" && (p.OnTimeout != "" || len(p.Overrides) > 0) {
+		return fmt.Errorf("on_timeout/overrides set without timeout")
+	}
+	if p.Timeout != "" {
+		if err := validatePositiveDuration(p.Timeout); err != nil {
+			return fmt.Errorf("timeout: %w", err)
+		}
+	}
+	for i, o := range p.Overrides {
+		if len(o.Tools) == 0 {
+			return fmt.Errorf("overrides[%d]: tools is required", i)
+		}
+		for j, pattern := range o.Tools {
+			if pattern == "" {
+				return fmt.Errorf("overrides[%d].tools[%d]: pattern is empty", i, j)
+			}
+		}
+		if err := validatePositiveDuration(o.Timeout); err != nil {
+			return fmt.Errorf("overrides[%d].timeout: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validatePositiveDuration(s string) error {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	if d <= 0 {
+		return fmt.Errorf("must be > 0, got %q", s)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -229,6 +230,127 @@ func TestBuildEndToEndSelfCorrectsWithRealSchemaValidator(t *testing.T) {
 	}
 	if msgs[2].Role != message.RoleUser {
 		t.Fatalf("expected the feedback turn to be RoleUser, got %s", msgs[2].Role)
+	}
+}
+
+// newBlockingTool returns a tool whose Execute blocks until ctx is done,
+// standing in for a hung MCP server — the same fixture internal/runtime's
+// own tool_policy tests use.
+func newBlockingTool(name string) runtime.Tool {
+	return runtime.Tool{
+		Name:        name,
+		Description: "test tool that never returns on its own",
+		InputSchema: json.RawMessage(`{}`),
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	}
+}
+
+// TestBuildWiresToolPolicyTimeout proves the three-file wiring (config ->
+// agent.Build's toolPolicy() -> runtime.Engine) actually connects: a
+// tool_policy.timeout in the parsed config results in a real deadline
+// applied to tool execution, not just a struct copied around untested.
+func TestBuildWiresToolPolicyTimeout(t *testing.T) {
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:       "a",
+		Model:      config.ModelConfig{Provider: "ollama", Name: "m"},
+		ToolPolicy: config.ToolPolicyConfig{Timeout: "20ms"},
+	}
+	sp := &scriptedProvider{responses: []*provider.Response{
+		{Content: []message.ContentBlock{{Type: message.BlockToolUse, ID: "call_1", Name: "hang.tool", Input: json.RawMessage(`{}`)}}, StopReason: "tool_use"},
+		textResp("worked around it"),
+	}}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	eng.RegisterTool(newBlockingTool("hang.tool"))
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	var state runtime.State
+	for i := 0; i < 10; i++ {
+		state, err = eng.Step(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state == runtime.StateCompleted || state == runtime.StateFailed {
+			break
+		}
+	}
+	if state != runtime.StateCompleted {
+		run, _ := st.GetRun(ctx, "run-1")
+		t.Fatalf("expected the run to survive the wired timeout and complete, got %s (error=%v)", state, run.Error)
+	}
+
+	calls, err := st.ListToolCalls(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListToolCalls: %v", err)
+	}
+	if len(calls) != 1 || !calls[0].IsError || calls[0].Result == nil || !strings.Contains(*calls[0].Result, "timed out after 20ms") {
+		t.Fatalf("expected a timeout result naming 20ms, got %+v", calls)
+	}
+}
+
+// TestBuildWiresToolPolicyOverrideOrdering proves Build preserves the
+// config's override order end to end: two overrides that both match the
+// same tool must resolve to the first one, exactly as toolPolicy() and
+// ToolPolicy.timeoutFor() intend.
+func TestBuildWiresToolPolicyOverrideOrdering(t *testing.T) {
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:  "a",
+		Model: config.ModelConfig{Provider: "ollama", Name: "m"},
+		ToolPolicy: config.ToolPolicyConfig{
+			Timeout: "5s",
+			Overrides: []config.ToolTimeoutOverride{
+				{Tools: []string{"hang.*"}, Timeout: "20ms"},
+				{Tools: []string{"hang.tool"}, Timeout: "5m"},
+			},
+		},
+	}
+	sp := &scriptedProvider{responses: []*provider.Response{
+		{Content: []message.ContentBlock{{Type: message.BlockToolUse, ID: "call_1", Name: "hang.tool", Input: json.RawMessage(`{}`)}}, StopReason: "tool_use"},
+		textResp("worked around it"),
+	}}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	eng.RegisterTool(newBlockingTool("hang.tool"))
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	var state runtime.State
+	for i := 0; i < 10; i++ {
+		state, err = eng.Step(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state == runtime.StateCompleted || state == runtime.StateFailed {
+			break
+		}
+	}
+	if state != runtime.StateCompleted {
+		run, _ := st.GetRun(ctx, "run-1")
+		t.Fatalf("expected completed, got %s (error=%v)", state, run.Error)
+	}
+
+	calls, err := st.ListToolCalls(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListToolCalls: %v", err)
+	}
+	// The first-listed override (20ms) must win over the second (5m),
+	// which also matches — proving Build carried override order through.
+	if len(calls) != 1 || !calls[0].IsError || calls[0].Result == nil || !strings.Contains(*calls[0].Result, "timed out after 20ms") {
+		t.Fatalf("expected the first matching override (20ms) to win, got %+v", calls)
 	}
 }
 

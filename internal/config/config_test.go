@@ -292,6 +292,82 @@ output:
 `,
 			wantErr: "on_invalid/max_retries set without schema",
 		},
+		{
+			name: "unknown tool_policy on_timeout",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: 30s
+  on_timeout: sometimes
+`,
+			wantErr: `on_timeout: unknown value "sometimes"`,
+		},
+		{
+			name: "unparseable tool_policy timeout",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: soon
+`,
+			wantErr: "timeout:",
+		},
+		{
+			name: "zero tool_policy timeout",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: 0s
+`,
+			wantErr: `timeout: must be > 0, got "0s"`,
+		},
+		{
+			name: "negative tool_policy timeout",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: -5s
+`,
+			wantErr: `timeout: must be > 0, got "-5s"`,
+		},
+		{
+			name: "tool_policy on_timeout without timeout",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  on_timeout: fail
+`,
+			wantErr: "on_timeout/overrides set without timeout",
+		},
+		{
+			name: "tool_policy override without tools",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: 30s
+  overrides:
+    - timeout: 90s
+`,
+			wantErr: "overrides[0]: tools is required",
+		},
+		{
+			name: "tool_policy override with unparseable timeout",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: 30s
+  overrides:
+    - tools: ["github.*"]
+      timeout: soon
+`,
+			wantErr: "overrides[0].timeout:",
+		},
 	}
 
 	for _, tc := range cases {
@@ -304,6 +380,39 @@ output:
 				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestLoadToolPolicy(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model: {provider: ollama, name: foo}
+tool_policy:
+  timeout: 30s
+  on_timeout: fail
+  overrides:
+    - tools: ["github.*"]
+      timeout: 90s
+    - tools: ["render.video", "build.*"]
+      timeout: 10m
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.ToolPolicy.Timeout != "30s" {
+		t.Errorf("tool_policy.timeout = %q, want %q", cfg.ToolPolicy.Timeout, "30s")
+	}
+	if cfg.ToolPolicy.OnTimeout != "fail" {
+		t.Errorf("tool_policy.on_timeout = %q, want %q", cfg.ToolPolicy.OnTimeout, "fail")
+	}
+	if len(cfg.ToolPolicy.Overrides) != 2 {
+		t.Fatalf("expected 2 overrides, got %d", len(cfg.ToolPolicy.Overrides))
+	}
+	if got := cfg.ToolPolicy.Overrides[0]; len(got.Tools) != 1 || got.Tools[0] != "github.*" || got.Timeout != "90s" {
+		t.Errorf("overrides[0] = %+v, want tools=[github.*] timeout=90s", got)
+	}
+	if got := cfg.ToolPolicy.Overrides[1]; len(got.Tools) != 2 || got.Tools[1] != "build.*" || got.Timeout != "10m" {
+		t.Errorf("overrides[1] = %+v, want tools=[render.video build.*] timeout=10m", got)
 	}
 }
 

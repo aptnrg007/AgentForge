@@ -7,15 +7,16 @@ package config
 
 // Config is the top-level agent definition.
 type Config struct {
-	Name         string          `json:"name"`
-	Model        ModelConfig     `json:"model"`
-	Instructions string          `json:"instructions,omitempty"`
-	MCP          []MCPServer     `json:"mcp,omitempty"`
-	Tools        []string        `json:"tools,omitempty"`
-	Approvals    ApprovalsConfig `json:"approvals,omitempty"`
-	Limits       LimitsConfig    `json:"limits,omitempty"`
-	Session      SessionConfig   `json:"session,omitempty"`
-	Output       OutputConfig    `json:"output,omitempty"`
+	Name         string           `json:"name"`
+	Model        ModelConfig      `json:"model"`
+	Instructions string           `json:"instructions,omitempty"`
+	MCP          []MCPServer      `json:"mcp,omitempty"`
+	Tools        []string         `json:"tools,omitempty"`
+	Approvals    ApprovalsConfig  `json:"approvals,omitempty"`
+	Limits       LimitsConfig     `json:"limits,omitempty"`
+	Session      SessionConfig    `json:"session,omitempty"`
+	Output       OutputConfig     `json:"output,omitempty"`
+	ToolPolicy   ToolPolicyConfig `json:"tool_policy,omitempty"`
 
 	// SourceDir is the directory Load read this config's file from, used
 	// to resolve output.schema (and any future relative path) against
@@ -89,4 +90,29 @@ type OutputConfig struct {
 	// the engine's default" (2, matching the tool-call repair ceiling),
 	// not "no retries" — on_invalid: fail is how you get zero retries.
 	MaxRetries int `json:"max_retries,omitempty"`
+}
+
+// ToolPolicyConfig bounds how long a single tool call may run. Absent
+// entirely (the zero value), tools are unbounded — the pre-existing
+// behavior, unchanged unless a config opts in.
+type ToolPolicyConfig struct {
+	// Timeout is the default applied to every tool call unless an
+	// override matches. Empty means unbounded.
+	Timeout string `json:"timeout,omitempty"`
+	// OnTimeout is "error" (default, empty) — the timeout becomes a
+	// tool-result error fed back to the model, same as a denied call —
+	// or "fail", which ends the run.
+	OnTimeout string `json:"on_timeout,omitempty"`
+	// Overrides is an ordered list, not a map: first match wins, so two
+	// patterns that both match one tool resolve deterministically
+	// (a map's iteration order is randomized in Go).
+	Overrides []ToolTimeoutOverride `json:"overrides,omitempty"`
+}
+
+// ToolTimeoutOverride sets a timeout for tools matching any of Tools —
+// glob patterns against the tool's namespaced name, same syntax as
+// approvals.require/auto_approve.
+type ToolTimeoutOverride struct {
+	Tools   []string `json:"tools"`
+	Timeout string   `json:"timeout"`
 }

@@ -7,6 +7,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -95,6 +96,37 @@ func globMatch(pattern, name string) bool {
 	return err == nil && ok
 }
 
+// ToolPolicy bounds how long a single tool call may run. The zero value
+// (Timeout 0, no Overrides) is unbounded — the pre-existing behavior,
+// unchanged unless a config opts in via tool_policy.
+type ToolPolicy struct {
+	Timeout   time.Duration // 0 = unbounded default
+	OnTimeout string        // "error" (default, empty) | "fail"
+	Overrides []ToolTimeoutRule
+}
+
+// ToolTimeoutRule sets Timeout for any tool whose namespaced name matches
+// one of Patterns.
+type ToolTimeoutRule struct {
+	Patterns []string
+	Timeout  time.Duration
+}
+
+// timeoutFor returns the timeout for toolName: the first Overrides entry
+// whose pattern matches, else the policy default, else 0 (unbounded).
+// Ordered rather than a map lookup so two patterns that both match one
+// tool resolve deterministically — Go map iteration order is randomized.
+func (p ToolPolicy) timeoutFor(toolName string) time.Duration {
+	for _, rule := range p.Overrides {
+		for _, pat := range rule.Patterns {
+			if globMatch(pat, toolName) {
+				return rule.Timeout
+			}
+		}
+	}
+	return p.Timeout
+}
+
 // OutputPolicy turns on schema-validated structured output for a run's
 // final answer. Validate is a plain func rather than an interface or a
 // concrete schema type so internal/runtime never needs to import a JSON
@@ -132,6 +164,7 @@ type Config struct {
 	Temperature float64
 	Approvals   ApprovalPolicy
 	Output      OutputPolicy
+	ToolPolicy  ToolPolicy
 }
 
 type Engine struct {
@@ -614,10 +647,38 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 			resultText, isError = fmt.Sprintf("tool call denied: %s", reason), true
 		default: // auto, approved
 			if tool, ok := e.tools[tc.ToolName]; ok {
-				out, err := tool.Execute(ctx, json.RawMessage(tc.ArgsJSON))
-				if err != nil {
+				callCtx := ctx
+				cancel := func() {}
+				if d := e.cfg.ToolPolicy.timeoutFor(tc.ToolName); d > 0 {
+					callCtx, cancel = context.WithTimeout(ctx, d)
+				}
+				out, err := tool.Execute(callCtx, json.RawMessage(tc.ArgsJSON))
+				cancel()
+
+				switch {
+				case err != nil && errors.Is(err, context.DeadlineExceeded):
+					d := e.cfg.ToolPolicy.timeoutFor(tc.ToolName)
+					timeoutMsg := fmt.Sprintf("tool %q timed out after %s", tc.ToolName, d)
+					if e.cfg.ToolPolicy.OnTimeout == "fail" {
+						// A fail-on-timeout run ends here: record what
+						// happened on the call itself (so `runs get`
+						// shows the timeout), then fail the run
+						// directly — no further unexecuted calls in
+						// this batch are processed, and no next model
+						// turn is needed.
+						if uerr := e.store.UpdateToolCallResult(ctx, tc.ID, timeoutMsg, true); uerr != nil {
+							return "", uerr
+						}
+						e.emit(Event{Kind: EventToolResult, CallID: tc.ID, ToolName: tc.ToolName, Result: timeoutMsg, IsError: true})
+						if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), run.TurnCount, run.RepairCount, &timeoutMsg); uerr != nil {
+							return "", uerr
+						}
+						return StateFailed, nil
+					}
+					resultText, isError = timeoutMsg, true
+				case err != nil:
 					resultText, isError = err.Error(), true
-				} else {
+				default:
 					resultText = out
 				}
 			} else {

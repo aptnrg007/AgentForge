@@ -100,7 +100,8 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 			Timeout:     timeout,
 			OnTimeout:   cfg.Approvals.OnTimeout,
 		},
-		Output: outputPolicy,
+		Output:     outputPolicy,
+		ToolPolicy: toolPolicy(cfg.ToolPolicy),
 	})
 
 	tools, err := ResolveTools(ctx, registry, cfg)
@@ -165,4 +166,26 @@ func compileOutputPolicy(cfg *config.Config, prov provider.Provider) (runtime.Ou
 		Native:     prov.Capabilities().StructuredOutput,
 	}
 	return policy, schema.Instruction(validator.Raw()), nil
+}
+
+// toolPolicy translates a validated config.ToolPolicyConfig into the
+// runtime's ToolPolicy. Every duration here is re-parsed with the error
+// dropped, exactly like the Approvals.Timeout parse above in Build: by
+// this point config.Parse has already validated every duration string in
+// cfg.ToolPolicy, so a parse error is unreachable in practice, and
+// treating an (unreachable) failure as "unbounded" is the safe default.
+func toolPolicy(cfg config.ToolPolicyConfig) runtime.ToolPolicy {
+	timeout, _ := time.ParseDuration(cfg.Timeout)
+
+	overrides := make([]runtime.ToolTimeoutRule, len(cfg.Overrides))
+	for i, o := range cfg.Overrides {
+		d, _ := time.ParseDuration(o.Timeout)
+		overrides[i] = runtime.ToolTimeoutRule{Patterns: o.Tools, Timeout: d}
+	}
+
+	return runtime.ToolPolicy{
+		Timeout:   timeout,
+		OnTimeout: cfg.OnTimeout,
+		Overrides: overrides,
+	}
 }

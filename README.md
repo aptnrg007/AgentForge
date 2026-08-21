@@ -77,6 +77,13 @@ approvals:
 #   on_invalid: retry              # retry | fail
 #   max_retries: 2
 
+# tool_policy:                     # optional: bound how long a single tool call may run
+#   timeout: 30s                   # default for every tool; absent = unbounded (today's behavior)
+#   on_timeout: error              # error (default, feed it back to the model) | fail (end the run)
+#   overrides:                     # ordered — first matching pattern wins
+#     - tools: ["github.*"]
+#       timeout: 90s
+
 limits:
   max_turns: 10
   max_tokens: 4096
@@ -141,6 +148,36 @@ only when the config was loaded from a file directly (`run`, `chat`). A run resu
 the daemon or `runs approve`/`resume` reconstructs its config from the copy stored in
 SQLite, which has no source directory; use an absolute path if the agent might run that
 way. The error message says so if you get it wrong.
+
+## Tool timeouts
+
+With no `tool_policy` block, a tool call has no deadline of its own — a hung MCP server (a
+stdio child that accepts a request and never answers) wedges the run forever, with no
+config knob to bound it. `tool_policy` closes that gap:
+
+```yaml
+tool_policy:
+  timeout: 30s          # default applied to every tool call
+  on_timeout: error      # error (default) | fail
+  overrides:              # ordered — first matching pattern wins
+    - tools: ["github.*"]
+      timeout: 90s
+    - tools: ["render.video", "build.*"]
+      timeout: 10m
+```
+
+`on_timeout: error` (the default) feeds the timeout back to the model as a tool-result
+error, exactly like a denied call — the run survives and the agent gets to try something
+else. `on_timeout: fail` ends the run instead, the same as an exhausted schema-retry
+budget. There is no implicit default: a config with no `tool_policy` at all keeps every
+tool unbounded, unchanged from before this existed — opting in is explicit.
+
+A timed-out call also forces the MCP server it belongs to to reconnect on its next use
+(`internal/mcp` drops any session that returns an error, deadline included — abandoning a
+request mid-flight would desync a stdio JSON-RPC stream), so a tool that repeatedly times
+out restarts its server each time.
+
+`limits.timeout` is parsed and validated but not yet enforced — a separate, still-open gap.
 
 ## CLI
 

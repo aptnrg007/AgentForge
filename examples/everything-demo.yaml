@@ -22,6 +22,16 @@ approvals:
   require:
     - "everything.get-sum"
 
+# tool_policy:                      # optional: bound how long a single tool call may run
+#   timeout: 5s                     # this server also has a "sleep" tool (add "everything.sleep"
+#   on_timeout: error               # to the tools filter above) that's slower than this on
+#                                    # purpose, making a timeout easy to trigger and observe:
+#                                    #   ./agentforge run examples/everything-demo.yaml \
+#                                    #     -m "sleep for 60 seconds"
+#                                    # the run completes (on_timeout: error), and `runs get`
+#                                    # shows the tool call as an error: 'tool "everything.sleep"
+#                                    # timed out after 5s'.
+
 limits:
   max_turns: 10
   max_tokens: 1024
