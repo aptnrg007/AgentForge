@@ -46,7 +46,7 @@ model:
   temperature: 0.2
   # api_key: ${ANTHROPIC_API_KEY}   # anthropic/openai; same ${VAR} resolution as GITHUB_TOKEN below
   # base_url: https://api.groq.com/openai/v1   # openai only — any OpenAI-compatible endpoint
-  #                                             # (Groq, Together, vLLM, llama.cpp, ...); api_key
+  #                                             # (Groq, Together, xAI/Grok, vLLM, llama.cpp, ...); api_key
   #                                             # is only required when base_url is left unset
 
 instructions: |
@@ -194,7 +194,7 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
 
 Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), per-tool timeouts, and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
 

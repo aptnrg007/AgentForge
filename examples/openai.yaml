@@ -10,6 +10,7 @@ model:
   # unchanged (a local server generally needs no api_key at all):
   #   base_url: https://api.groq.com/openai/v1        # Groq
   #   base_url: https://api.together.xyz/v1            # Together
+  #   base_url: https://api.x.ai/v1                     # xAI (Grok)
   #   base_url: http://localhost:8000/v1                # vLLM / llama.cpp / LM Studio
 
 instructions: |
