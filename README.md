@@ -43,13 +43,14 @@ approval needed (1/1): everything.get-sum
 name: github-assistant
 
 model:
-  provider: ollama              # ollama | anthropic | openai
+  provider: ollama              # ollama | anthropic | openai | gemini
   name: qwen2.5-coder:14b
   temperature: 0.2
-  # api_key: ${ANTHROPIC_API_KEY}   # anthropic/openai; same ${VAR} resolution as GITHUB_TOKEN below
+  # api_key: ${ANTHROPIC_API_KEY}   # anthropic/openai/gemini; same ${VAR} resolution as GITHUB_TOKEN below
   # base_url: https://api.groq.com/openai/v1   # openai only — any OpenAI-compatible endpoint
   #                                             # (Groq, Together, xAI/Grok, vLLM, llama.cpp, ...); api_key
   #                                             # is only required when base_url is left unset
+  #                                             # (gemini always requires api_key — no self-hosted/no-auth case)
 
 instructions: |
   You are a GitHub assistant. Use the available tools to answer questions
@@ -91,7 +92,7 @@ limits:
   max_tokens: 4096
 ```
 
-Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`, or `examples/anthropic.yaml` for the matching Anthropic config). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic or OpenAI instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
+Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai`/`provider: gemini` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`, or `examples/anthropic.yaml`/`examples/gemini.yaml` for the matching Anthropic/Gemini configs). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic, OpenAI, or Gemini instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
 
 ## Real agents
 
@@ -213,7 +214,8 @@ attempt, no second chance.
 Native enforcement varies by provider: Ollama enforces the schema (via `format`) only when
 the agent has no tools registered — constrained decoding makes tool calls impossible on
 that turn, so a tool-using agent on Ollama always takes the fallback below, same as
-Anthropic (no native support at all yet). OpenAI is the exception: `response_format`
+Anthropic and Gemini (neither has native support yet — Gemini's `responseSchema` is an
+OpenAPI-subset dialect that would need its own translation layer). OpenAI is the exception: `response_format`
 composes with `tools` on the same request, so an OpenAI-backed agent gets native
 enforcement *and* tool use together — the one combination nothing else here can do yet.
 Wherever native enforcement doesn't apply, validation happens by inspecting the model's
@@ -317,7 +319,7 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
 
 Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), a run-level deadline (`limits.timeout` is validated but not yet enforced), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
 

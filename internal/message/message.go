@@ -36,6 +36,12 @@ type ContentBlock struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`
+
+	// Signature carries opaque provider-issued metadata that must be echoed
+	// back verbatim when this block is replayed in a later turn. Gemini is
+	// the only current user: its thinking models sign functionCall parts
+	// and reject history that has lost the signature.
+	Signature string `json:"signature,omitempty"`
 }
 
 type Message struct {

@@ -88,7 +88,7 @@ func (c *Config) validate() error {
 
 func (m ModelConfig) validate() error {
 	switch m.Provider {
-	case "ollama", "anthropic", "openai":
+	case "ollama", "anthropic", "openai", "gemini":
 	case "":
 		return fmt.Errorf("provider is required")
 	default:
@@ -104,6 +104,11 @@ func (m ModelConfig) validate() error {
 	// first request.
 	if m.Provider == "anthropic" && m.APIKey == "" {
 		return fmt.Errorf("api_key is required for provider \"anthropic\"")
+	}
+	// gemini always requires a key too — there is no self-hosted or
+	// no-auth equivalent the way openai's base_url exemption covers.
+	if m.Provider == "gemini" && m.APIKey == "" {
+		return fmt.Errorf("api_key is required for provider \"gemini\"")
 	}
 	// openai only requires a key when base_url is empty (real OpenAI). A
 	// base_url pointing at a local/self-hosted OpenAI-compatible server

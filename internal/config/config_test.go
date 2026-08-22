@@ -261,6 +261,14 @@ model: {provider: openai, name: gpt-5}
 			wantErr: `api_key is required for provider "openai"`,
 		},
 		{
+			name: "gemini without api_key",
+			yaml: `
+name: bad
+model: {provider: gemini, name: gemini-3.7-flash}
+`,
+			wantErr: `api_key is required for provider "gemini"`,
+		},
+		{
 			name: "unknown output on_invalid",
 			yaml: `
 name: bad
@@ -648,6 +656,24 @@ func TestLoadAnthropicExample(t *testing.T) {
 	}
 	if cfg.Model.APIKey != "sk-ant-test" {
 		t.Errorf("model.api_key = %q, want interpolated %q", cfg.Model.APIKey, "sk-ant-test")
+	}
+}
+
+func TestLoadGeminiExample(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", "test-google-key")
+
+	cfg, err := Load("../../examples/gemini.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Model.Provider != "gemini" {
+		t.Errorf("model.provider = %q, want %q", cfg.Model.Provider, "gemini")
+	}
+	if cfg.Model.APIKey != "test-google-key" {
+		t.Errorf("model.api_key = %q, want interpolated %q", cfg.Model.APIKey, "test-google-key")
+	}
+	if len(cfg.ToolDefinitions) != 2 {
+		t.Fatalf("expected 2 tool_definitions, got %d", len(cfg.ToolDefinitions))
 	}
 }
 

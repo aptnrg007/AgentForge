@@ -38,6 +38,8 @@ func DefaultProviderFactory(model config.ModelConfig) (provider.Provider, error)
 		return provider.NewAnthropic(model.APIKey, model.BaseURL), nil
 	case "openai":
 		return provider.NewOpenAI(model.APIKey, model.BaseURL), nil
+	case "gemini":
+		return provider.NewGemini(model.APIKey, model.BaseURL), nil
 	default:
 		return nil, fmt.Errorf("model.provider %q not yet supported", model.Provider)
 	}

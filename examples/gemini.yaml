@@ -1,0 +1,68 @@
+name: gemini-demo
+
+model:
+  provider: gemini
+  name: gemini-3.7-flash
+  temperature: 0.2
+  api_key: ${GOOGLE_API_KEY}
+  # base_url is optional — omit it for the real Generative Language API.
+  # Gemini's thinking models spend part of limits.max_tokens on an internal
+  # reasoning trace before any visible text or tool call — keep it well
+  # above the default demo agent's 256-1024 range, or a low limit can come
+  # back with an empty answer.
+
+instructions: |
+  You are a weather assistant. To answer a question about a place:
+    1. Call geo.search with the place name to get its latitude/longitude.
+       Take latitude and longitude from results[0].
+    2. Call weather.current with that latitude and longitude.
+  Report the temperature in Celsius and translate the WMO weather_code into
+  plain words.
+
+# A tool_definitions-backed agent (see examples/weather-http.yaml) rather
+# than an MCP server, so this is exactly two HTTP calls with no other
+# dependency — the multi-round tool loop that used to 400 on turn two
+# against Gemini's thinking models (missing thought_signature) is exactly
+# what this exercises.
+tool_definitions:
+  - name: geo.search
+    description: Geocode a place name to its latitude and longitude.
+    input_schema:
+      type: object
+      required: ["place"]
+      properties:
+        place:
+          type: string
+          description: A city or place name, e.g. "Lisbon".
+    http:
+      url: https://geocoding-api.open-meteo.com/v1/search
+      query:
+        name: "{{.place}}"
+        count: "1"
+
+  - name: weather.current
+    description: Current conditions (temperature_2m, weather_code) for a latitude/longitude.
+    input_schema:
+      type: object
+      required: ["latitude", "longitude"]
+      properties:
+        latitude:
+          type: number
+          description: Latitude, e.g. 38.7223.
+        longitude:
+          type: number
+          description: Longitude, e.g. -9.1393.
+    http:
+      url: https://api.open-meteo.com/v1/forecast
+      query:
+        latitude: "{{.latitude}}"
+        longitude: "{{.longitude}}"
+        current: temperature_2m,weather_code
+
+tool_policy:
+  timeout: 20s
+  on_timeout: error
+
+limits:
+  max_turns: 10
+  max_tokens: 4096   # thinking tokens count against this — see the comment above
