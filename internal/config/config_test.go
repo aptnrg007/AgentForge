@@ -368,6 +368,193 @@ tool_policy:
 `,
 			wantErr: "overrides[0].timeout:",
 		},
+		{
+			name: "tool_definitions missing name",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+`,
+			wantErr: "tool_definitions[0]: name is required",
+		},
+		{
+			name: "tool_definitions name with glob metacharacter",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: "repo.*"
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+`,
+			wantErr: "must match",
+		},
+		{
+			name: "tool_definitions missing description",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+`,
+			wantErr: "description is required",
+		},
+		{
+			name: "tool_definitions missing input_schema",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    http: {url: "https://example.com"}
+`,
+			wantErr: "input_schema is required",
+		},
+		{
+			name: "tool_definitions uncompilable input_schema",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": ["object", 5]}
+    http: {url: "https://example.com"}
+`,
+			wantErr: "input_schema:",
+		},
+		{
+			name: "tool_definitions neither http nor command",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+`,
+			wantErr: "exactly one of http/command is required",
+		},
+		{
+			name: "tool_definitions both http and command",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+    command: {argv: ["rg"]}
+`,
+			wantErr: "only one of http/command may be set",
+		},
+		{
+			name: "tool_definitions duplicate name",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+  - name: repo.grep
+    description: does another thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+`,
+			wantErr: `duplicate name "repo.grep"`,
+		},
+		{
+			name: "tool_definitions name collides with mcp namespace",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+mcp:
+  - {name: repo, transport: stdio, command: ["echo"]}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+`,
+			wantErr: `collides with mcp server "repo"'s namespace`,
+		},
+		{
+			name: "tool_definitions excluded by tools filter",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com"}
+tools:
+  - "other.*"
+`,
+			wantErr: "excluded by the tools: filter",
+		},
+		{
+			name: "tool_definitions unparseable template",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com/{{.pattern}"}
+`,
+			wantErr: "url:",
+		},
+		{
+			name: "tool_definitions unknown http method",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://example.com", method: FROBNICATE}
+`,
+			wantErr: `method: unknown value "FROBNICATE"`,
+		},
+		{
+			name: "tool_definitions templated argv[0]",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    command: {argv: ["{{.binary}}"]}
+`,
+			wantErr: "argv[0]: must be literal",
+		},
+		{
+			name: "tool_definitions templated url host",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+tool_definitions:
+  - name: repo.grep
+    description: does a thing
+    input_schema: {"type": "object"}
+    http: {url: "https://{{.host}}/path"}
+`,
+			wantErr: "scheme and host must be literal",
+		},
 	}
 
 	for _, tc := range cases {
@@ -396,6 +583,43 @@ func TestLoadWeatherExample(t *testing.T) {
 	}
 	if cfg.ToolPolicy.OnTimeout != "error" {
 		t.Errorf("tool_policy.on_timeout = %q, want %q", cfg.ToolPolicy.OnTimeout, "error")
+	}
+}
+
+func TestLoadWeatherHTTPExample(t *testing.T) {
+	cfg, err := Load("../../examples/weather-http.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCP) != 0 {
+		t.Fatalf("expected no mcp servers, got %+v", cfg.MCP)
+	}
+	if len(cfg.ToolDefinitions) != 2 {
+		t.Fatalf("expected 2 tool_definitions, got %d", len(cfg.ToolDefinitions))
+	}
+	geo := cfg.ToolDefinitions[0]
+	if geo.Name != "geo.search" || geo.HTTP == nil || geo.Command != nil {
+		t.Fatalf("unexpected first tool_definitions entry: %+v", geo)
+	}
+	if geo.HTTP.URL != "https://geocoding-api.open-meteo.com/v1/search" {
+		t.Errorf("geo.search url = %q", geo.HTTP.URL)
+	}
+}
+
+func TestLoadRepoAssistantExample(t *testing.T) {
+	cfg, err := Load("../../examples/repo-assistant.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ToolDefinitions) != 2 {
+		t.Fatalf("expected 2 tool_definitions, got %d", len(cfg.ToolDefinitions))
+	}
+	grep := cfg.ToolDefinitions[0]
+	if grep.Name != "repo.grep" || grep.Command == nil || grep.HTTP != nil {
+		t.Fatalf("unexpected first tool_definitions entry: %+v", grep)
+	}
+	if len(cfg.Approvals.AutoApprove) != 1 || cfg.Approvals.AutoApprove[0] != "repo.log" {
+		t.Errorf("approvals.auto_approve = %v, want [\"repo.log\"]", cfg.Approvals.AutoApprove)
 	}
 }
 

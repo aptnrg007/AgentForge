@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,6 +353,86 @@ func TestBuildWiresToolPolicyOverrideOrdering(t *testing.T) {
 	// which also matches — proving Build carried override order through.
 	if len(calls) != 1 || !calls[0].IsError || calls[0].Result == nil || !strings.Contains(*calls[0].Result, "timed out after 20ms") {
 		t.Fatalf("expected the first matching override (20ms) to win, got %+v", calls)
+	}
+}
+
+// TestBuildRegistersToolDefinitionsWithoutMCP guards against the early
+// return ResolveTools used to have for len(cfg.MCP) == 0 — a config that
+// defines tools directly (internal/tools) but has no mcp: servers at all
+// is the common case tool_definitions exists for, and must still build
+// and register a working tool.
+func TestBuildRegistersToolDefinitionsWithoutMCP(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:  "a",
+		Model: config.ModelConfig{Provider: "ollama", Name: "m"},
+		ToolDefinitions: []config.ToolDefinition{{
+			Name:        "ping.check",
+			Description: "test",
+			InputSchema: json.RawMessage(`{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}`),
+			HTTP:        &config.HTTPToolConfig{URL: srv.URL, Query: map[string]string{"id": "{{.id}}"}},
+		}},
+	}
+	sp := &scriptedProvider{responses: []*provider.Response{
+		{Content: []message.ContentBlock{{Type: message.BlockToolUse, ID: "call_1", Name: "ping.check", Input: json.RawMessage(`{"id":"abc"}`)}}, StopReason: "tool_use"},
+		textResp("done"),
+	}}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	var state runtime.State
+	for i := 0; i < 10; i++ {
+		state, err = eng.Step(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state == runtime.StateCompleted || state == runtime.StateFailed {
+			break
+		}
+	}
+	if state != runtime.StateCompleted {
+		run, _ := st.GetRun(ctx, "run-1")
+		t.Fatalf("expected completed, got %s (error=%v)", state, run.Error)
+	}
+	if gotQuery != "id=abc" {
+		t.Fatalf("query = %q, want the tool_definitions HTTP tool to have actually been called", gotQuery)
+	}
+}
+
+// TestResolveToolsFiltersDefinedToolsByToolsPattern proves the tools:
+// glob filter applies uniformly to config.ToolDefinitions-sourced tools,
+// not just MCP-discovered ones.
+func TestResolveToolsFiltersDefinedToolsByToolsPattern(t *testing.T) {
+	_, registry := newTestStoreAndRegistry(t)
+	schema := json.RawMessage(`{"type":"object"}`)
+	cfg := &config.Config{
+		Name:  "a",
+		Model: config.ModelConfig{Provider: "ollama", Name: "m"},
+		ToolDefinitions: []config.ToolDefinition{
+			{Name: "keep.me", Description: "test", InputSchema: schema, HTTP: &config.HTTPToolConfig{URL: "https://example.com"}},
+			{Name: "drop.me", Description: "test", InputSchema: schema, HTTP: &config.HTTPToolConfig{URL: "https://example.com"}},
+		},
+		Tools: []string{"keep.*"},
+	}
+	tools, err := ResolveTools(context.Background(), registry, cfg)
+	if err != nil {
+		t.Fatalf("ResolveTools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "keep.me" {
+		t.Fatalf("expected only keep.me to survive the tools: filter, got %+v", tools)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"agentforge/internal/runtime"
 	"agentforge/internal/schema"
 	"agentforge/internal/store"
+	"agentforge/internal/tools"
 )
 
 const (
@@ -42,23 +43,27 @@ func DefaultProviderFactory(model config.ModelConfig) (provider.Provider, error)
 	}
 }
 
-// ResolveTools returns cfg's MCP tools, namespaced and filtered by
-// cfg.Tools, without building a full engine.
+// ResolveTools returns cfg's tools — those declared directly via
+// cfg.ToolDefinitions plus cfg.MCP's, namespaced — filtered by cfg.Tools,
+// without building a full engine. A config with definitions but no mcp:
+// servers at all is the common case for tools.Build's output, so this
+// deliberately doesn't short-circuit on len(cfg.MCP) == 0 the way the
+// MCP-only loop below would on its own.
 func ResolveTools(ctx context.Context, registry *mcp.Registry, cfg *config.Config) ([]runtime.Tool, error) {
-	if len(cfg.MCP) == 0 {
-		return nil, nil
+	all, err := tools.Build(cfg)
+	if err != nil {
+		return nil, err
 	}
 
-	var all []runtime.Tool
 	for _, srv := range cfg.MCP {
 		if srv.Transport != "stdio" {
 			return nil, fmt.Errorf("mcp server %q: transport %q not yet supported", srv.Name, srv.Transport)
 		}
-		tools, err := registry.Tools(ctx, srv.Name, mcp.ServerConfig{Command: srv.Command, Env: srv.Env})
+		discovered, err := registry.Tools(ctx, srv.Name, mcp.ServerConfig{Command: srv.Command, Env: srv.Env})
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %q: %w", srv.Name, err)
 		}
-		all = append(all, tools...)
+		all = append(all, discovered...)
 	}
 
 	return config.FilterTools(all, cfg.Tools), nil

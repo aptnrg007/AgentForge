@@ -5,18 +5,21 @@
 // instead of at tool-call time (ground rule 3).
 package config
 
+import "encoding/json"
+
 // Config is the top-level agent definition.
 type Config struct {
-	Name         string           `json:"name"`
-	Model        ModelConfig      `json:"model"`
-	Instructions string           `json:"instructions,omitempty"`
-	MCP          []MCPServer      `json:"mcp,omitempty"`
-	Tools        []string         `json:"tools,omitempty"`
-	Approvals    ApprovalsConfig  `json:"approvals,omitempty"`
-	Limits       LimitsConfig     `json:"limits,omitempty"`
-	Session      SessionConfig    `json:"session,omitempty"`
-	Output       OutputConfig     `json:"output,omitempty"`
-	ToolPolicy   ToolPolicyConfig `json:"tool_policy,omitempty"`
+	Name            string           `json:"name"`
+	Model           ModelConfig      `json:"model"`
+	Instructions    string           `json:"instructions,omitempty"`
+	MCP             []MCPServer      `json:"mcp,omitempty"`
+	ToolDefinitions []ToolDefinition `json:"tool_definitions,omitempty"`
+	Tools           []string         `json:"tools,omitempty"`
+	Approvals       ApprovalsConfig  `json:"approvals,omitempty"`
+	Limits          LimitsConfig     `json:"limits,omitempty"`
+	Session         SessionConfig    `json:"session,omitempty"`
+	Output          OutputConfig     `json:"output,omitempty"`
+	ToolPolicy      ToolPolicyConfig `json:"tool_policy,omitempty"`
 
 	// SourceDir is the directory Load read this config's file from, used
 	// to resolve output.schema (and any future relative path) against
@@ -49,6 +52,57 @@ type MCPServer struct {
 	Command   []string          `json:"command,omitempty"`
 	URL       string            `json:"url,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
+}
+
+// ToolDefinition declares one in-process tool: a name, a description and
+// input_schema the model sees exactly like an MCP tool's, backed by
+// either an HTTP request or an exec'd command instead of an MCP server.
+// Exactly one of HTTP/Command must be set — see ToolDefinition.validate.
+// This is the narrow, one-shot alternative to writing an MCP server; see
+// the "Defining your own tools" section of README.md for when to reach
+// for which.
+type ToolDefinition struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+	// ReadOnly mirrors MCP's readOnlyHint annotation, and like that
+	// annotation is only consulted under approvals.mode: annotated.
+	// Defaults false for both backends — an HTTP GET is not assumed
+	// read-only just because it's a GET.
+	ReadOnly bool `json:"read_only,omitempty"`
+
+	HTTP    *HTTPToolConfig    `json:"http,omitempty"`
+	Command *CommandToolConfig `json:"command,omitempty"`
+}
+
+// HTTPToolConfig backs a ToolDefinition with a single HTTP request. Every
+// string field (except Method) is a text/template against the tool
+// call's input; see internal/tools/template.go.
+type HTTPToolConfig struct {
+	Method  string            `json:"method,omitempty"` // default GET
+	URL     string            `json:"url"`
+	Query   map[string]string `json:"query,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Body    string            `json:"body,omitempty"`
+	// MaxResponseBytes caps the response body read from the server; 0
+	// means the internal/tools default (64 KiB).
+	MaxResponseBytes int `json:"max_response_bytes,omitempty"`
+}
+
+// CommandToolConfig backs a ToolDefinition with an exec'd process — no
+// shell involved, ever: Argv is passed to exec.Command as discrete
+// arguments, so a rendered value containing shell metacharacters is
+// inert. Every string field is a text/template against the tool call's
+// input. A command-backed tool defaults to approval-gated regardless of
+// approvals.mode; see runtime.Tool.RequiresApproval.
+type CommandToolConfig struct {
+	Argv    []string          `json:"argv"`
+	Workdir string            `json:"workdir,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Stdin   string            `json:"stdin,omitempty"`
+	// MaxOutputBytes caps the captured stdout; 0 means the
+	// internal/tools default (64 KiB).
+	MaxOutputBytes int `json:"max_output_bytes,omitempty"`
 }
 
 // ApprovalsConfig is parsed and validated starting in Phase 3, but not

@@ -51,7 +51,15 @@ type Tool struct {
 	// reported by the server) and only used as a default under
 	// ApprovalPolicy.Mode == "annotated".
 	ReadOnlyHint bool
-	Execute      ToolExecutor
+	// RequiresApproval forces this tool to a human decision regardless
+	// of ApprovalPolicy.Mode (though ApprovalPolicy.Require/AutoApprove
+	// still take precedence — see ApprovalPolicy.evaluate). Set by
+	// exec-backed tool_definitions (internal/tools), where auto-running
+	// under the default mode "never" would hand the model unguarded
+	// process execution; the opt-out is an explicit
+	// approvals.auto_approve pattern.
+	RequiresApproval bool
+	Execute          ToolExecutor
 }
 
 // ApprovalPolicy decides, per tool call, whether it can run immediately
@@ -66,8 +74,12 @@ type ApprovalPolicy struct {
 	OnTimeout   string        // deny | allow; empty defaults to deny
 }
 
-// evaluate returns "auto" or "pending" for a tool call.
-func (p ApprovalPolicy) evaluate(toolName string, readOnly bool) string {
+// evaluate returns "auto" or "pending" for a tool call. t is the tool
+// being called (zero value for one the engine doesn't know about, which
+// evaluate treats like any other non-annotated, non-approval-required
+// tool — stepTools separately reports "no longer registered" for that
+// case).
+func (p ApprovalPolicy) evaluate(toolName string, t Tool) string {
 	for _, pat := range p.Require {
 		if globMatch(pat, toolName) {
 			return "pending"
@@ -78,11 +90,14 @@ func (p ApprovalPolicy) evaluate(toolName string, readOnly bool) string {
 			return "auto"
 		}
 	}
+	if t.RequiresApproval {
+		return "pending"
+	}
 	switch p.Mode {
 	case "always":
 		return "pending"
 	case "annotated":
-		if readOnly {
+		if t.ReadOnlyHint {
 			return "auto"
 		}
 		return "pending"
@@ -502,7 +517,7 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	// each and persist its decision (or lack of one).
 	allAuto := true
 	for _, tu := range toolUses {
-		approval := e.cfg.Approvals.evaluate(tu.Name, e.tools[tu.Name].ReadOnlyHint)
+		approval := e.cfg.Approvals.evaluate(tu.Name, e.tools[tu.Name])
 		if approval != "auto" {
 			allAuto = false
 		}

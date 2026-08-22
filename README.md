@@ -104,11 +104,80 @@ export AGENTFORGE_MEMORY_PATH=/tmp/notes.json
 
 ./agentforge run examples/weather.yaml -m "what's the weather in Lisbon?"      # mcp-server-fetch + Open-Meteo, no key
 ./agentforge run examples/article-digest.yaml -m "digest https://modelcontextprotocol.io/introduction"   # same server, structured output
+
+./agentforge run examples/weather-http.yaml -m "what's the weather in Lisbon?"  # same agent, zero MCP servers — see below
+./agentforge run examples/repo-assistant.yaml -m "find every TODO in this repo"  # pauses for approval before running rg
 ```
 
 The filesystem/notes pair makes a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction.
 
 The weather and digest agents both use the official reference fetch server, which is Python rather than npm — install `uv` once (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and `uvx` runs it with no separate install step. They also make their own contrast, over the same server: `weather.yaml` passes `--ignore-robots-txt` because Open-Meteo's API disallows crawlers by default even though it's a free, key-less API meant for exactly this kind of programmatic call; `article-digest.yaml` fetches whatever URL a user hands it, so it deliberately leaves that flag off and honors each site's robots.txt like a normal browser would.
+
+`weather-http.yaml` is the same agent as `weather.yaml` with no MCP server at all — see "Defining your own tools" below for why. `repo-assistant.yaml` is the `command:` counterpart: it wraps `rg` and `git log` directly, and demonstrates the approval gate every `command:`-backed tool gets by default.
+
+## Defining your own tools
+
+Every tool an agent can call comes from one of two places: an MCP server (`mcp:` +
+`tools:` as a namespaced glob filter over what it advertises), or a `tool_definitions:`
+block that declares the tool directly in the config — no server process, no extra
+dependency. Reach for a definition when a tool is "make one HTTP call" or "run one
+command"; reach for an MCP server when you want something stateful, reusable across
+agents, or that exposes many tools behind one connection.
+
+A definition has a `name`, `description`, and `input_schema` — the model sees these
+exactly as it would an MCP tool — plus exactly one backend:
+
+```yaml
+tool_definitions:
+  - name: weather.current
+    description: Current conditions for a latitude/longitude.
+    input_schema:
+      type: object
+      required: ["latitude", "longitude"]
+      properties:
+        latitude: {type: number}
+        longitude: {type: number}
+    http:                                    # OR command: — never both
+      url: https://api.open-meteo.com/v1/forecast
+      query:
+        latitude: "{{.latitude}}"            # every string field here is a text/template
+        longitude: "{{.longitude}}"          # against the tool call's input
+        current: temperature_2m,weather_code
+
+  - name: repo.grep
+    description: Search the repository for a literal pattern.
+    input_schema:
+      type: object
+      required: ["pattern"]
+      properties:
+        pattern: {type: string}
+    command:
+      argv: ["rg", "--json", "--", "{{.pattern}}"]   # exec'd directly — no shell, ever
+```
+
+A few things worth knowing before writing one:
+
+- **Templates use `missingkey=error`**: a placeholder the model's input doesn't cover is a
+  tool-call error, not a silent empty string — which also means a field referenced in a
+  template should be `required` in `input_schema`, or an omitted optional field breaks the
+  call. `examples/repo-assistant.yaml`'s `repo.log` requires `path` for exactly this reason.
+- **`command:` runs `argv` directly via `exec.Command`** — a rendered value containing
+  `;`, spaces, or `$(...)` arrives as one inert argument, never shell-interpreted. `argv[0]`
+  (the binary) must be a literal in the config; only later elements may be templated. The
+  child process gets a minimal environment (`PATH`/`HOME`/`LANG`), not the daemon's full
+  one — add anything else explicitly via `command.env`.
+- **`command:`-backed tools are approval-gated by default**, regardless of
+  `approvals.mode` — handing the model process execution with no gate isn't a safe
+  default. Opt a specific one out with `approvals.auto_approve` (see `repo.log` in
+  `examples/repo-assistant.yaml`, which does this because it's read-only in practice).
+  `http:`-backed tools follow the normal approval rules.
+- **A definition's `url` host must be literal** — a placeholder there would let the model
+  retarget the request at an arbitrary server. Placeholders in the path and query are fine.
+- Both backends respect `tool_policy` timeouts and truncate their output the same way
+  (default 64 KiB, `max_response_bytes`/`max_output_bytes` to change it).
+
+`examples/weather-http.yaml` and `examples/repo-assistant.yaml` are full working
+configs — the `http:` and `command:` sides of the same feature.
 
 ## Structured output
 
@@ -186,10 +255,11 @@ A timed-out call also forces the MCP server it belongs to to reconnect on its ne
 request mid-flight would desync a stdio JSON-RPC stream), so a tool that repeatedly times
 out restarts its server each time.
 
-`examples/weather.yaml` is a live example: it sets `tool_policy.timeout: 20s` around a
-web-fetch tool, exactly the kind of call that can hang. Drop it to `1ms` and rerun to
-watch a run survive its own tool timing out — `runs get` shows the call as an error
-reading `tool "web.fetch" timed out after 1ms` instead of the run hanging or failing.
+`examples/weather.yaml` (and its `tool_definitions:`-based twin, `examples/weather-http.yaml`)
+are live examples: both set `tool_policy.timeout: 20s` around a network call, exactly the
+kind of call that can hang. Drop it to `1ms` and rerun to watch a run survive its own tool
+timing out — `runs get` shows the call as an error reading `tool "web.fetch" timed out
+after 1ms` (or the equivalent for `geo.search`) instead of the run hanging or failing.
 
 `limits.timeout` is parsed and validated but not yet enforced — a separate, still-open gap.
 
@@ -245,9 +315,9 @@ GET    /healthz
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, three providers behind one `Provider` interface — Ollama, Anthropic, and OpenAI (plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
 
-Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), a run-level deadline (`limits.timeout` is validated but not yet enforced), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, a plugin SDK (MCP *is* the plugin system), and a visual builder. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), a run-level deadline (`limits.timeout` is validated but not yet enforced), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
 
 ## Building
 

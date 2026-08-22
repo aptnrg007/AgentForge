@@ -29,6 +29,14 @@ func interpolateEnv(v reflect.Value) error {
 			}
 		}
 	case reflect.Slice, reflect.Array:
+		// A []byte-kinded slice (json.RawMessage, e.g.
+		// ToolDefinition.InputSchema) is JSON Schema text, not agent
+		// config strings — walking it byte by byte would be pointless,
+		// and ${VAR} must not be allowed to expand inside a schema
+		// document.
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return nil
+		}
 		for i := 0; i < v.Len(); i++ {
 			if err := interpolateEnv(v.Index(i)); err != nil {
 				return err

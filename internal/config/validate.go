@@ -2,7 +2,13 @@ package config
 
 import (
 	"fmt"
+	"path"
+	"regexp"
+	"strings"
+	"text/template"
 	"time"
+
+	"agentforge/internal/schema"
 )
 
 func (c *Config) validate() error {
@@ -13,17 +19,43 @@ func (c *Config) validate() error {
 		return fmt.Errorf("model: %w", err)
 	}
 
-	seen := map[string]bool{}
+	mcpNamespaces := map[string]bool{}
 	for i, m := range c.MCP {
 		if m.Name == "" {
 			return fmt.Errorf("mcp[%d]: name is required", i)
 		}
-		if seen[m.Name] {
+		if mcpNamespaces[m.Name] {
 			return fmt.Errorf("mcp[%d]: duplicate server name %q", i, m.Name)
 		}
-		seen[m.Name] = true
+		mcpNamespaces[m.Name] = true
 		if err := m.validate(); err != nil {
 			return fmt.Errorf("mcp[%d] (%s): %w", i, m.Name, err)
+		}
+	}
+
+	toolDefNames := map[string]bool{}
+	for i, td := range c.ToolDefinitions {
+		if err := td.validate(); err != nil {
+			return fmt.Errorf("tool_definitions[%d]: %w", i, err)
+		}
+		if toolDefNames[td.Name] {
+			return fmt.Errorf("tool_definitions[%d]: duplicate name %q", i, td.Name)
+		}
+		toolDefNames[td.Name] = true
+		if dot := strings.IndexByte(td.Name, '.'); dot >= 0 && mcpNamespaces[td.Name[:dot]] {
+			return fmt.Errorf("tool_definitions[%d]: name %q collides with mcp server %q's namespace", i, td.Name, td.Name[:dot])
+		}
+		if len(c.Tools) > 0 {
+			matched := false
+			for _, pattern := range c.Tools {
+				if ok, _ := path.Match(pattern, td.Name); ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("tool_definitions[%d] (%s): excluded by the tools: filter — add %q to tools:", i, td.Name, td.Name)
+			}
 		}
 	}
 
@@ -98,6 +130,147 @@ func (m MCPServer) validate() error {
 		return fmt.Errorf("transport is required")
 	default:
 		return fmt.Errorf("unknown transport %q", m.Transport)
+	}
+	return nil
+}
+
+var toolDefNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+func (td ToolDefinition) validate() error {
+	if td.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if !toolDefNamePattern.MatchString(td.Name) {
+		return fmt.Errorf("name %q: must match %s (no glob metacharacters — it has to be matchable by its own tools: pattern)", td.Name, toolDefNamePattern.String())
+	}
+	if td.Description == "" {
+		return fmt.Errorf("description is required")
+	}
+	if len(td.InputSchema) == 0 {
+		return fmt.Errorf("input_schema is required")
+	}
+	if _, err := schema.Compile(td.InputSchema); err != nil {
+		return fmt.Errorf("input_schema: %w", err)
+	}
+
+	if td.HTTP == nil && td.Command == nil {
+		return fmt.Errorf("exactly one of http/command is required")
+	}
+	if td.HTTP != nil && td.Command != nil {
+		return fmt.Errorf("only one of http/command may be set")
+	}
+	if td.HTTP != nil {
+		if err := td.HTTP.validate(); err != nil {
+			return fmt.Errorf("http: %w", err)
+		}
+	}
+	if td.Command != nil {
+		if err := td.Command.validate(); err != nil {
+			return fmt.Errorf("command: %w", err)
+		}
+	}
+	return nil
+}
+
+func (h HTTPToolConfig) validate() error {
+	if h.URL == "" {
+		return fmt.Errorf("url is required")
+	}
+	if err := validateTemplate("url", h.URL); err != nil {
+		return err
+	}
+	// The host must be literal: a placeholder there would let the model
+	// retarget the request at an arbitrary server. Placeholders in the
+	// path (e.g. "https://api.example.com/{{.id}}") are fine. This
+	// checks the raw, unrendered URL string directly rather than going
+	// through url.Parse — url.Parse rejects "{" in a host outright, so
+	// it can't be used to *find* the problem, only to trip over it.
+	if err := requireLiteralHost(h.URL); err != nil {
+		return err
+	}
+	switch h.Method {
+	case "", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+	default:
+		return fmt.Errorf("method: unknown value %q", h.Method)
+	}
+	if h.MaxResponseBytes < 0 {
+		return fmt.Errorf("max_response_bytes: must be >= 0")
+	}
+	for k, v := range h.Query {
+		if err := validateTemplate("query["+k+"]", v); err != nil {
+			return err
+		}
+	}
+	for k, v := range h.Headers {
+		if err := validateTemplate("headers["+k+"]", v); err != nil {
+			return err
+		}
+	}
+	if err := validateTemplate("body", h.Body); err != nil {
+		return err
+	}
+	return nil
+}
+
+// requireLiteralHost rejects a URL template whose scheme://authority
+// portion contains a {{ }} placeholder.
+func requireLiteralHost(rawURL string) error {
+	idx := strings.Index(rawURL, "://")
+	if idx < 0 {
+		return fmt.Errorf("url: must be an absolute URL (missing scheme://)")
+	}
+	rest := rawURL[idx+3:]
+	authority := rest
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		authority = rest[:end]
+	}
+	if strings.Contains(authority, "{{") {
+		return fmt.Errorf("url: scheme and host must be literal (no {{ }} template) — put placeholders in the path or query instead")
+	}
+	return nil
+}
+
+func (c CommandToolConfig) validate() error {
+	if len(c.Argv) == 0 || c.Argv[0] == "" {
+		return fmt.Errorf("argv: must have at least one element, with argv[0] non-empty")
+	}
+	// argv[0] chooses the binary; that has to stay literal, or the model
+	// could point exec at anything on PATH.
+	if strings.Contains(c.Argv[0], "{{") {
+		return fmt.Errorf("argv[0]: must be literal (no {{ }} template) — the model may supply arguments, not the binary")
+	}
+	for i, a := range c.Argv {
+		if err := validateTemplate(fmt.Sprintf("argv[%d]", i), a); err != nil {
+			return err
+		}
+	}
+	if err := validateTemplate("workdir", c.Workdir); err != nil {
+		return err
+	}
+	for k, v := range c.Env {
+		if err := validateTemplate("env["+k+"]", v); err != nil {
+			return err
+		}
+	}
+	if err := validateTemplate("stdin", c.Stdin); err != nil {
+		return err
+	}
+	if c.MaxOutputBytes < 0 {
+		return fmt.Errorf("max_output_bytes: must be >= 0")
+	}
+	return nil
+}
+
+// validateTemplate parses s as a text/template without executing it, the
+// same missingkey=error dialect internal/tools uses at call time — this
+// only catches a malformed {{ }} at load time, not a placeholder the
+// input never supplies (that's a runtime error, by design).
+func validateTemplate(field, s string) error {
+	if s == "" {
+		return nil
+	}
+	if _, err := template.New(field).Parse(s); err != nil {
+		return fmt.Errorf("%s: %w", field, err)
 	}
 	return nil
 }

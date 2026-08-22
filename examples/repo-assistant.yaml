@@ -1,0 +1,60 @@
+name: repo-assistant
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You answer questions about this git repository by running searches and
+  reading recent history — never by guessing. Use repo.grep to find text
+  in the tree and repo.log to see recent commits touching a path. Quote
+  file paths and commit hashes exactly as the tools report them.
+
+# Two command:-backed tool_definitions — the exec side of tool_definitions,
+# as weather-http.yaml is the http: side. Every command:-backed tool
+# defaults to approval-gated (runtime.Tool.RequiresApproval) regardless of
+# approvals.mode, since handing the model process execution with no gate
+# is not a safe default. repo.grep demonstrates that gate firing;
+# repo.log demonstrates the explicit auto_approve opt-out for a tool
+# that's read-only in practice.
+tool_definitions:
+  - name: repo.grep
+    description: Search the repository for a literal pattern.
+    input_schema:
+      type: object
+      required: ["pattern"]
+      properties:
+        pattern:
+          type: string
+          description: Text to search for (not a regex).
+    command:
+      # --: everything after it is the pattern, never a flag — even a
+      # pattern the model writes starting with "-" can't get reinterpreted.
+      argv: ["rg", "--json", "--", "{{.pattern}}"]
+      workdir: .
+
+  - name: repo.log
+    description: Recent commits touching a path.
+    input_schema:
+      type: object
+      required: ["path"]
+      properties:
+        path:
+          type: string
+          description: A file or directory to limit the log to. Pass "." for the whole repo.
+    command:
+      argv: ["git", "log", "--oneline", "-n", "10", "--", "{{.path}}"]
+      workdir: .
+
+approvals:
+  auto_approve:
+    - "repo.log"   # read-only in practice; repo.grep stays gated
+
+tool_policy:
+  timeout: 15s
+  on_timeout: error
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

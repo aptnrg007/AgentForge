@@ -1,0 +1,70 @@
+name: weather-http
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You are a weather assistant. To answer a question about a place:
+    1. Call geo.search with the place name to get its latitude/longitude.
+       Take latitude and longitude from results[0].
+    2. Call weather.current with that latitude and longitude.
+  Report the temperature in Celsius and translate the WMO weather_code into
+  plain words. If geo.search returns no results, say so rather than
+  guessing coordinates.
+
+# Same agent as weather.yaml, but with zero MCP servers: two http:-backed
+# tool_definitions replace the uvx-run fetch server entirely. No `uv`
+# install, and — because an HTTP tool is an ordinary API client — no
+# robots.txt problem either: api.open-meteo.com's "Disallow: /" only
+# applies to general-purpose web fetchers like the MCP fetch server, which
+# can't tell an API endpoint from a page meant for browsers. Reach for
+# this shape when a tool is "make one HTTP call"; reach for an MCP server
+# (weather.yaml) when you want a maintained, reusable, or stateful
+# integration instead of hand-rolling it here.
+tool_definitions:
+  - name: geo.search
+    description: Geocode a place name to its latitude and longitude.
+    input_schema:
+      type: object
+      required: ["place"]
+      properties:
+        place:
+          type: string
+          description: A city or place name, e.g. "Lisbon".
+    http:
+      url: https://geocoding-api.open-meteo.com/v1/search
+      query:
+        name: "{{.place}}"
+        count: "1"
+
+  - name: weather.current
+    description: Current conditions (temperature_2m, weather_code) for a latitude/longitude.
+    input_schema:
+      type: object
+      required: ["latitude", "longitude"]
+      properties:
+        latitude:
+          type: number
+          description: Latitude, e.g. 38.7223.
+        longitude:
+          type: number
+          description: Longitude, e.g. -9.1393.
+    http:
+      url: https://api.open-meteo.com/v1/forecast
+      query:
+        latitude: "{{.latitude}}"
+        longitude: "{{.longitude}}"
+        current: temperature_2m,weather_code
+
+tool_policy:
+  # A network call is precisely the one that can hang forever. 20s is
+  # generous for these two endpoints, and on_timeout: error lets the model
+  # retry or explain instead of the run dying.
+  timeout: 20s
+  on_timeout: error
+
+limits:
+  max_turns: 10        # geocode + forecast + answer is three turns minimum
+  max_tokens: 1024
