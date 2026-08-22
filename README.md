@@ -1,5 +1,7 @@
 # AgentForge
 
+![AgentForge](generated-image.png)
+
 A single-binary runtime that turns a YAML file into a running AI agent with MCP tools, an HTTP API, and human approval gates — on your own machine, no cloud account required.
 
 ## Quickstart
