@@ -1,0 +1,49 @@
+name: notifier
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You send push notifications on request. When asked to notify someone,
+  call notify.send with a topic, a short title, and the message body.
+  If the user doesn't name a topic, ask for one rather than inventing it.
+
+# The POST + body/header-templating side of tool_definitions — every
+# other http: example (weather-http.yaml, gemini.yaml) only ever does
+# GET+query. ntfy.sh is a free, no-signup push-notification service: a
+# POST to https://ntfy.sh/<topic> delivers to anyone subscribed to that
+# topic. A topic is an unauthenticated public channel, not a secret —
+# pick something distinctive (e.g. "agentforge-yourname-demo"), not
+# something guessable you'd mind a stranger seeing.
+tool_definitions:
+  - name: notify.send
+    description: Send a push notification to an ntfy.sh topic.
+    input_schema:
+      type: object
+      required: ["topic", "title", "message"]
+      properties:
+        topic:
+          type: string
+          description: The ntfy.sh topic to publish to, e.g. "agentforge-demo".
+        title:
+          type: string
+          description: Short notification title.
+        message:
+          type: string
+          description: The notification body.
+    http:
+      method: POST
+      url: https://ntfy.sh/{{.topic}}
+      headers:
+        Title: "{{.title}}"
+      body: "{{.message}}"
+
+tool_policy:
+  timeout: 10s
+  on_timeout: error
+
+limits:
+  max_turns: 5
+  max_tokens: 512

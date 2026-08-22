@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -146,6 +147,43 @@ tool_definitions:
 	}
 	if gotAuth != "Bearer sekret" {
 		t.Fatalf("Authorization = %q, want %q", gotAuth, "Bearer sekret")
+	}
+}
+
+// TestHTTPToolPOSTMethodAndBodyAreRendered covers method:/body:, the one
+// pair of fields no other http: test (or example config, before
+// notifier.yaml) exercises — every other case here is GET+query.
+func TestHTTPToolPOSTMethodAndBodyAreRendered(t *testing.T) {
+	var gotMethod, gotTitle, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotTitle = r.Header.Get("Title")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	exec := mustBuildOne(t, config.ToolDefinition{
+		Name: "notify", Description: "d", InputSchema: objSchema("title", "message"),
+		HTTP: &config.HTTPToolConfig{
+			Method:  "POST",
+			URL:     srv.URL,
+			Headers: map[string]string{"Title": "{{.title}}"},
+			Body:    "{{.message}}",
+		},
+	})
+	if _, err := exec(context.Background(), json.RawMessage(`{"title":"Test","message":"hello there"}`)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotTitle != "Test" {
+		t.Fatalf("Title header = %q, want %q", gotTitle, "Test")
+	}
+	if gotBody != "hello there" {
+		t.Fatalf("body = %q, want %q", gotBody, "hello there")
 	}
 }
 

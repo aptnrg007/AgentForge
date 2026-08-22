@@ -677,6 +677,50 @@ func TestLoadGeminiExample(t *testing.T) {
 	}
 }
 
+func TestLoadGitHubAssistantExample(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-github-token")
+
+	cfg, err := Load("../../examples/github-assistant.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCP) != 1 || cfg.MCP[0].Name != "github" {
+		t.Fatalf("expected one mcp server named github, got %+v", cfg.MCP)
+	}
+	if cfg.MCP[0].Env["GITHUB_TOKEN"] != "test-github-token" {
+		t.Errorf("mcp.env.GITHUB_TOKEN = %q, want interpolated %q", cfg.MCP[0].Env["GITHUB_TOKEN"], "test-github-token")
+	}
+	if len(cfg.ToolPolicy.Overrides) != 1 {
+		t.Fatalf("expected 1 tool_policy override, got %d", len(cfg.ToolPolicy.Overrides))
+	}
+}
+
+func TestLoadCodebaseNotesExample(t *testing.T) {
+	t.Setenv("AGENTFORGE_FS_ROOT", "/tmp")
+	t.Setenv("AGENTFORGE_MEMORY_PATH", "/tmp/notes.json")
+
+	cfg, err := Load("../../examples/codebase-notes.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCP) != 2 {
+		t.Fatalf("expected 2 mcp servers, got %d", len(cfg.MCP))
+	}
+}
+
+func TestLoadNotifierExample(t *testing.T) {
+	cfg, err := Load("../../examples/notifier.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ToolDefinitions) != 1 || cfg.ToolDefinitions[0].HTTP == nil {
+		t.Fatalf("expected 1 http tool_definition, got %+v", cfg.ToolDefinitions)
+	}
+	if cfg.ToolDefinitions[0].HTTP.Method != "POST" {
+		t.Errorf("http.method = %q, want %q", cfg.ToolDefinitions[0].HTTP.Method, "POST")
+	}
+}
+
 func TestLoadToolPolicy(t *testing.T) {
 	cfg, err := Parse([]byte(`
 name: ok

@@ -1,0 +1,53 @@
+name: codebase-notes
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You help someone understand a codebase over multiple sessions. Read
+  files in the scoped project directory to answer the question, then
+  record a concise observation in the memory graph summarizing what you
+  found, so a later run can recall it without re-reading the same files.
+  Keep observations short and specific — one or two sentences, not a
+  transcript of what you read.
+
+# Two real MCP servers in one config, not one — the same fs and memory
+# servers filesystem-assistant.yaml and notes-assistant.yaml each use on
+# their own, cooperating on a single task here. Each server's tools are
+# namespaced by its own mcp: name (fs./memory.), so there's nothing to
+# reconcile even though "read a file" and "save a note" come from two
+# unrelated processes.
+mcp:
+  - name: fs
+    transport: stdio
+    # export AGENTFORGE_FS_ROOT=$(pwd) — same variable filesystem-assistant.yaml uses.
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${AGENTFORGE_FS_ROOT}"]
+  - name: memory
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-memory"]
+    env:
+      # export AGENTFORGE_MEMORY_PATH=/somewhere/notes.json — same
+      # variable notes-assistant.yaml uses.
+      MEMORY_FILE_PATH: ${AGENTFORGE_MEMORY_PATH}
+
+# Read-only fs.* subset, deliberately — no write_file/edit_file/move_file/
+# create_directory here. This agent only ever reads; see
+# filesystem-assistant.yaml for the write-capable, approval-gated version.
+tools:
+  - "fs.read_text_file"
+  - "fs.read_multiple_files"
+  - "fs.list_directory"
+  - "fs.directory_tree"
+  - "fs.search_files"
+  - "fs.get_file_info"
+  - "memory.*"
+
+# No approvals section, deliberately: every fs.* tool in scope is
+# read-only, and memory writes here are just local notes — same
+# reasoning as notes-assistant.yaml.
+
+limits:
+  max_turns: 15
+  max_tokens: 2048

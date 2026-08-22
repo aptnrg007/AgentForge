@@ -1,0 +1,43 @@
+name: github-assistant
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You are a GitHub assistant. Use the available tools to answer questions
+  about repositories, issues, and pull requests.
+
+# This is the config from README.md's "Agent config" section, made real —
+# see that section for the full field-by-field walkthrough.
+mcp:
+  - name: github
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: ${GITHUB_TOKEN}   # resolved from the environment at load time
+
+tools:
+  - "github.*"
+
+approvals:
+  mode: annotated                # trust the server's own read-only hints for everything
+  require:                       # except these, regardless of what the hint says
+    - "github.create_issue"
+  auto_approve:                  # and always auto-run these, regardless of the hint
+    - "github.get_*"
+  timeout: 30m
+  on_timeout: deny
+
+tool_policy:
+  timeout: 30s
+  overrides:
+    # GitHub's API is a real network round trip, not a local MCP call —
+    # every github.* tool gets more room than the 30s default.
+    - tools: ["github.*"]
+      timeout: 90s
+
+limits:
+  max_turns: 10
+  max_tokens: 4096

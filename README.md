@@ -92,7 +92,7 @@ limits:
   max_tokens: 4096
 ```
 
-Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai`/`provider: gemini` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`, or `examples/anthropic.yaml`/`examples/gemini.yaml` for the matching Anthropic/Gemini configs). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic, OpenAI, or Gemini instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes.
+Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai`/`provider: gemini` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`, or `examples/anthropic.yaml`/`examples/gemini.yaml` for the matching Anthropic/Gemini configs). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic, OpenAI, or Gemini instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes. `examples/github-assistant.yaml` is this config, runnable as-is with a real `GITHUB_TOKEN`.
 
 ## Real agents
 
@@ -104,19 +104,21 @@ export AGENTFORGE_FS_ROOT=$(pwd)
 
 export AGENTFORGE_MEMORY_PATH=/tmp/notes.json
 ./agentforge run examples/notes-assistant.yaml -m "remember that I like tea"   # @modelcontextprotocol/server-memory, ungated
+./agentforge run examples/codebase-notes.yaml -m "what does this repo do?"     # both servers above, at once — see below
 
 ./agentforge run examples/weather.yaml -m "what's the weather in Lisbon?"      # mcp-server-fetch + Open-Meteo, no key
 ./agentforge run examples/article-digest.yaml -m "digest https://modelcontextprotocol.io/introduction"   # same server, structured output
 
 ./agentforge run examples/weather-http.yaml -m "what's the weather in Lisbon?"  # same agent, zero MCP servers — see below
 ./agentforge run examples/repo-assistant.yaml -m "find every TODO in this repo"  # pauses for approval before running rg
+./agentforge run examples/notifier.yaml -m "notify topic agentforge-demo titled Hi saying it works"  # a POST tool_definitions tool — see below
 ```
 
-The filesystem/notes pair makes a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction.
+The filesystem/notes pair makes a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction. `codebase-notes.yaml` puts both of those servers in one config instead of picking one — `fs.*` and `memory.*` are namespaced by each server's own `mcp: name`, so there's nothing to reconcile even though "read a file" and "save a note" come from two unrelated processes; it reads files (read-only tools only, no write/edit/move/create) and records what it learned in the memory graph for a later run to recall.
 
 The weather and digest agents both use the official reference fetch server, which is Python rather than npm — install `uv` once (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and `uvx` runs it with no separate install step. They also make their own contrast, over the same server: `weather.yaml` passes `--ignore-robots-txt` because Open-Meteo's API disallows crawlers by default even though it's a free, key-less API meant for exactly this kind of programmatic call; `article-digest.yaml` fetches whatever URL a user hands it, so it deliberately leaves that flag off and honors each site's robots.txt like a normal browser would.
 
-`weather-http.yaml` is the same agent as `weather.yaml` with no MCP server at all — see "Defining your own tools" below for why. `repo-assistant.yaml` is the `command:` counterpart: it wraps `rg` and `git log` directly, and demonstrates the approval gate every `command:`-backed tool gets by default.
+`weather-http.yaml` is the same agent as `weather.yaml` with no MCP server at all — see "Defining your own tools" below for why. `repo-assistant.yaml` is the `command:` counterpart: it wraps `rg` and `git log` directly, and demonstrates the approval gate every `command:`-backed tool gets by default. `notifier.yaml` is the third corner of `http:` tool_definitions neither of those cover: a `method: POST` with a templated `body:` and header, posting to [ntfy.sh](https://ntfy.sh) — a free, no-signup push-notification service. A topic name is an unauthenticated public channel, not a secret, so pick something distinctive rather than something you'd mind a stranger guessing.
 
 ## Defining your own tools
 
@@ -176,11 +178,15 @@ A few things worth knowing before writing one:
   `http:`-backed tools follow the normal approval rules.
 - **A definition's `url` host must be literal** — a placeholder there would let the model
   retarget the request at an arbitrary server. Placeholders in the path and query are fine.
+- **`http:` isn't only GET+query** — `method` (default `GET`), `headers`, and `body` are all
+  templated the same way as `query:`, so a `method: POST` with a templated `body:` works
+  exactly like you'd expect. See `examples/notifier.yaml`.
 - Both backends respect `tool_policy` timeouts and truncate their output the same way
   (default 64 KiB, `max_response_bytes`/`max_output_bytes` to change it).
 
 `examples/weather-http.yaml` and `examples/repo-assistant.yaml` are full working
-configs — the `http:` and `command:` sides of the same feature.
+configs — the `http:` and `command:` sides of the same feature. `examples/notifier.yaml`
+adds the `method:`/`body:` corner neither of those exercises.
 
 ## Structured output
 
@@ -264,6 +270,10 @@ are live examples: both set `tool_policy.timeout: 20s` around a network call, ex
 kind of call that can hang. Drop it to `1ms` and rerun to watch a run survive its own tool
 timing out — `runs get` shows the call as an error reading `tool "web.fetch" timed out
 after 1ms` (or the equivalent for `geo.search`) instead of the run hanging or failing.
+
+The `overrides:` shown above isn't hypothetical either — `examples/github-assistant.yaml`
+uses that exact `github.*`/`90s` override for real, because a GitHub API call is a slower
+round trip than the 30s default.
 
 `limits.timeout` is parsed and validated but not yet enforced — a separate, still-open gap.
 
