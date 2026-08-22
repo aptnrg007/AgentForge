@@ -131,6 +131,67 @@ func TestGeminiToolNamesStayDotted(t *testing.T) {
 	}
 }
 
+// TestToGeminiToolsSanitizesUnsupportedSchemaKeywords is built directly
+// from a real zod-to-json-schema rendering of a
+// z.record(z.string(), z.unknown()) field — the exact shape that exposed
+// this against Gemini's live API, not a hand-rolled minimal schema.
+// Gemini's functionDeclarations[].parameters is an OpenAPI 3.0 subset
+// that rejects $schema, additionalProperties, and propertyNames outright,
+// at any nesting level, so every occurrence must be stripped rather than
+// just the top-level one.
+func TestToGeminiToolsSanitizesUnsupportedSchemaKeywords(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"spec": {
+				"type": "object",
+				"propertyNames": {"type": "string"},
+				"additionalProperties": {}
+			}
+		},
+		"required": ["spec"],
+		"$schema": "http://json-schema.org/draft-07/schema#"
+	}`)
+	tools := toGeminiTools([]ToolDef{{Name: "validate_spec", Description: "d", InputSchema: schema}})
+	if len(tools) != 1 || len(tools[0].FunctionDeclarations) != 1 {
+		t.Fatalf("expected 1 function declaration, got %+v", tools)
+	}
+	params := tools[0].FunctionDeclarations[0].Parameters
+	for _, key := range []string{`"$schema"`, `"additionalProperties"`, `"propertyNames"`} {
+		if strings.Contains(string(params), key) {
+			t.Fatalf("expected %s stripped from parameters, got %s", key, params)
+		}
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		t.Fatalf("unmarshal sanitized parameters: %v", err)
+	}
+	if decoded["type"] != "object" {
+		t.Fatalf("expected top-level type to survive, got %+v", decoded)
+	}
+	props, ok := decoded["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties to survive, got %+v", decoded)
+	}
+	spec, ok := props["spec"].(map[string]any)
+	if !ok || spec["type"] != "object" {
+		t.Fatalf("expected nested spec.type to survive stripping, got %+v", props)
+	}
+}
+
+// TestToGeminiToolsStripsBareBooleanAdditionalProperties covers the
+// half of the finding that's easy to get wrong: additionalProperties is
+// rejected even as a bare boolean (additionalProperties: true), not only
+// when it's a nested schema object.
+func TestToGeminiToolsStripsBareBooleanAdditionalProperties(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","additionalProperties":true}`)
+	tools := toGeminiTools([]ToolDef{{Name: "t", Description: "d", InputSchema: schema}})
+	if strings.Contains(string(tools[0].FunctionDeclarations[0].Parameters), "additionalProperties") {
+		t.Fatalf("expected additionalProperties:true stripped too, got %s", tools[0].FunctionDeclarations[0].Parameters)
+	}
+}
+
 // --- HTTP-level tests ---
 
 func newTestGemini(t *testing.T, handler http.HandlerFunc) *Gemini {

@@ -236,9 +236,60 @@ func toGeminiTools(tools []ToolDef) []geminiTool {
 	}
 	decls := make([]geminiFunctionDeclaration, 0, len(tools))
 	for _, t := range tools {
-		decls = append(decls, geminiFunctionDeclaration{Name: t.Name, Description: t.Description, Parameters: t.InputSchema})
+		decls = append(decls, geminiFunctionDeclaration{Name: t.Name, Description: t.Description, Parameters: sanitizeGeminiSchema(t.InputSchema)})
 	}
 	return []geminiTool{{FunctionDeclarations: decls}}
+}
+
+// geminiUnsupportedSchemaKeywords are standard JSON Schema keywords that
+// Gemini's functionDeclarations[].parameters — an OpenAPI 3.0 schema
+// subset, not full JSON Schema — rejects outright. Confirmed directly
+// against the live API: $schema, additionalProperties (even as a bare
+// boolean, not only as a nested schema object), and propertyNames. Every
+// other provider passes InputSchema through unmodified; a real MCP
+// tool's schema (e.g. zod-to-json-schema's rendering of a
+// z.record(z.string(), z.unknown()) field) emits all three, and they can
+// appear at any nesting level, not just the top.
+var geminiUnsupportedSchemaKeywords = []string{"$schema", "additionalProperties", "propertyNames"}
+
+// sanitizeGeminiSchema strips geminiUnsupportedSchemaKeywords from raw at
+// every object level before it is sent as a functionDeclaration's
+// parameters. Malformed input is returned unchanged — schema.Compile has
+// already validated it upstream, at config load time, so this only ever
+// sees well-formed JSON in practice.
+func sanitizeGeminiSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(stripGeminiUnsupportedSchemaKeywords(v))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func stripGeminiUnsupportedSchemaKeywords(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, key := range geminiUnsupportedSchemaKeywords {
+			delete(t, key)
+		}
+		for k, val := range t {
+			t[k] = stripGeminiUnsupportedSchemaKeywords(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = stripGeminiUnsupportedSchemaKeywords(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // fromGeminiParts turns one candidate's parts into content blocks. Used
