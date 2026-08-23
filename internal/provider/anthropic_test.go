@@ -128,6 +128,115 @@ func TestAnthropicToolNameRoundTrips(t *testing.T) {
 	}
 }
 
+// TestToAnthropicMessagesToolResultPartsBecomesRealArray is the
+// regression test for the wire shape verified live against the real
+// Messages API: a tool_result whose ToolResultParts carries a text part
+// and an image part must marshal Content into a real 2-element JSON
+// array, not a flat string, with the image nested as its own sub-block.
+func TestToAnthropicMessagesToolResultPartsBecomesRealArray(t *testing.T) {
+	msgs := []message.Message{
+		{Role: message.RoleTool, Content: []message.ContentBlock{
+			{
+				Type: message.BlockToolResult, ToolUseID: "toolu_1", Content: "here is a screenshot [+1 image(s)]",
+				ToolResultParts: []message.ContentBlock{
+					{Type: message.BlockText, Text: "here is a screenshot"},
+					{Type: message.BlockImage, ImageData: "aGVsbG8=", ImageMediaType: "image/png"},
+				},
+			},
+		}},
+	}
+
+	got := toAnthropicMessages(msgs)
+	if len(got) != 1 || len(got[0].Content) != 1 {
+		t.Fatalf("expected 1 message with 1 content block, got %+v", got)
+	}
+
+	var parts []anthropicContent
+	if err := json.Unmarshal(got[0].Content[0].Content, &parts); err != nil {
+		t.Fatalf("expected Content to unmarshal as a JSON array, got %s: %v", got[0].Content[0].Content, err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 sub-blocks, got %+v", parts)
+	}
+	if parts[0].Type != "text" || parts[0].Text != "here is a screenshot" {
+		t.Fatalf("expected a leading text sub-block, got %+v", parts[0])
+	}
+	if parts[1].Type != "image" || parts[1].Source == nil {
+		t.Fatalf("expected an image sub-block with a Source, got %+v", parts[1])
+	}
+	if parts[1].Source.Type != "base64" || parts[1].Source.MediaType != "image/png" || parts[1].Source.Data != "aGVsbG8=" {
+		t.Fatalf("expected the image source to carry base64/media type verbatim, got %+v", parts[1].Source)
+	}
+}
+
+// TestToAnthropicMessagesToolResultBackwardCompat pins that a plain
+// (no ToolResultParts) tool_result still marshals Content as a JSON
+// string, exactly as it did before ToolResultParts existed — every
+// pre-vision Anthropic conversation must keep working unchanged.
+func TestToAnthropicMessagesToolResultBackwardCompat(t *testing.T) {
+	msgs := []message.Message{
+		{Role: message.RoleTool, Content: []message.ContentBlock{
+			{Type: message.BlockToolResult, ToolUseID: "toolu_1", Content: "42"},
+		}},
+	}
+	got := toAnthropicMessages(msgs)
+	if len(got) != 1 || len(got[0].Content) != 1 {
+		t.Fatalf("expected 1 message with 1 content block, got %+v", got)
+	}
+	var s string
+	if err := json.Unmarshal(got[0].Content[0].Content, &s); err != nil {
+		t.Fatalf("expected Content to unmarshal as a plain JSON string, got %s: %v", got[0].Content[0].Content, err)
+	}
+	if s != "42" {
+		t.Fatalf("expected Content %q, got %q", "42", s)
+	}
+}
+
+// TestToAnthropicMessagesOnlyNewestToolResultKeepsImages is the token-cost
+// guard: once a tool-result message is no longer the newest thing in
+// history, its images collapse to the text summary instead of being
+// resent on every later request.
+func TestToAnthropicMessagesOnlyNewestToolResultKeepsImages(t *testing.T) {
+	richBlock := func(summary string) message.ContentBlock {
+		return message.ContentBlock{
+			Type: message.BlockToolResult, ToolUseID: "toolu_1", Content: summary,
+			ToolResultParts: []message.ContentBlock{
+				{Type: message.BlockImage, ImageData: "aGVsbG8=", ImageMediaType: "image/png"},
+			},
+		}
+	}
+	msgs := []message.Message{
+		{Role: message.RoleTool, Content: []message.ContentBlock{richBlock("[+1 image(s)] (old)")}},
+		message.Text(message.RoleAssistant, "got it"),
+		{Role: message.RoleTool, Content: []message.ContentBlock{richBlock("[+1 image(s)] (new)")}},
+	}
+
+	got := toAnthropicMessages(msgs)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %+v", len(got), got)
+	}
+
+	// The older tool_result (index 0, no longer last) must have collapsed
+	// to the plain text summary.
+	var oldContent string
+	if err := json.Unmarshal(got[0].Content[0].Content, &oldContent); err != nil {
+		t.Fatalf("expected the older tool_result to be a plain string, got %s: %v", got[0].Content[0].Content, err)
+	}
+	if oldContent != "[+1 image(s)] (old)" {
+		t.Fatalf("expected the older tool_result's text summary, got %q", oldContent)
+	}
+
+	// The newest tool_result (index 2, last message) must still be a real
+	// array with the image intact.
+	var newParts []anthropicContent
+	if err := json.Unmarshal(got[2].Content[0].Content, &newParts); err != nil {
+		t.Fatalf("expected the newest tool_result to be a JSON array, got %s: %v", got[2].Content[0].Content, err)
+	}
+	if len(newParts) != 1 || newParts[0].Type != "image" {
+		t.Fatalf("expected the newest tool_result to keep its image, got %+v", newParts)
+	}
+}
+
 // --- HTTP-level tests ---
 
 func newTestAnthropic(t *testing.T, handler http.HandlerFunc) *Anthropic {

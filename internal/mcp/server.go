@@ -149,13 +149,14 @@ func (s *server) discoverTools(ctx context.Context) ([]*mcpsdk.Tool, error) {
 	return all, nil
 }
 
-// callTool invokes a bare (non-namespaced) tool name. The returned bool
-// reports whether the MCP server flagged the result as a tool-level error
-// (as opposed to a transport/protocol error, which comes back as err).
-func (s *server) callTool(ctx context.Context, name string, args json.RawMessage) (string, bool, error) {
+// callToolRaw invokes a bare (non-namespaced) tool name and returns the
+// SDK's own result shape, un-flattened — the basis for both callTool
+// (flat text, used by every non-image-aware caller) and registry.go's
+// ExecuteRich (preserves an ImageContent block instead of stringifying it).
+func (s *server) callToolRaw(ctx context.Context, name string, args json.RawMessage) (*mcpsdk.CallToolResult, error) {
 	session, err := s.ensureSession(ctx)
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 
 	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: name, Arguments: args})
@@ -165,9 +166,19 @@ func (s *server) callTool(ctx context.Context, name string, args json.RawMessage
 			s.session = nil
 		}
 		s.mu.Unlock()
-		return "", false, fmt.Errorf("mcp: call tool %q: %w", name, err)
+		return nil, fmt.Errorf("mcp: call tool %q: %w", name, err)
 	}
+	return res, nil
+}
 
+// callTool invokes a bare (non-namespaced) tool name. The returned bool
+// reports whether the MCP server flagged the result as a tool-level error
+// (as opposed to a transport/protocol error, which comes back as err).
+func (s *server) callTool(ctx context.Context, name string, args json.RawMessage) (string, bool, error) {
+	res, err := s.callToolRaw(ctx, name, args)
+	if err != nil {
+		return "", false, err
+	}
 	return contentToText(res.Content), res.IsError, nil
 }
 

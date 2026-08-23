@@ -60,6 +60,15 @@ type Tool struct {
 	// approvals.auto_approve pattern.
 	RequiresApproval bool
 	Execute          ToolExecutor
+	// ExecuteRich, when non-nil, is preferred over Execute and can return
+	// a multi-part result (text and/or images) instead of a flat string —
+	// set only by MCP-backed tools (internal/mcp/registry.go) alongside
+	// their existing Execute, since http:/command:-backed tools
+	// (internal/tools) only ever produce text and have no reason to set
+	// it. stepTools still needs a plain-text summary either way (for
+	// tool_calls.result_json and Event.Result), which
+	// summarizeToolResultParts computes from the rich result.
+	ExecuteRich func(ctx context.Context, input json.RawMessage) ([]message.ContentBlock, error)
 }
 
 // ApprovalPolicy decides, per tool call, whether it can run immediately
@@ -652,6 +661,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 	for _, tc := range unexecuted {
 		var resultText string
 		var isError bool
+		var richParts []message.ContentBlock
 
 		switch tc.Approval {
 		case "denied":
@@ -667,7 +677,14 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 				if d := e.cfg.ToolPolicy.timeoutFor(tc.ToolName); d > 0 {
 					callCtx, cancel = context.WithTimeout(ctx, d)
 				}
-				out, err := tool.Execute(callCtx, json.RawMessage(tc.ArgsJSON))
+
+				var out string
+				var err error
+				if tool.ExecuteRich != nil {
+					richParts, err = tool.ExecuteRich(callCtx, json.RawMessage(tc.ArgsJSON))
+				} else {
+					out, err = tool.Execute(callCtx, json.RawMessage(tc.ArgsJSON))
+				}
 				cancel()
 
 				switch {
@@ -693,6 +710,8 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 					resultText, isError = timeoutMsg, true
 				case err != nil:
 					resultText, isError = err.Error(), true
+				case tool.ExecuteRich != nil:
+					resultText = summarizeToolResultParts(richParts)
 				default:
 					resultText = out
 				}
@@ -705,12 +724,16 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 			return "", err
 		}
 		e.emit(Event{Kind: EventToolResult, CallID: tc.ID, ToolName: tc.ToolName, Result: resultText, IsError: isError})
-		results = append(results, message.ContentBlock{
+		block := message.ContentBlock{
 			Type:      message.BlockToolResult,
 			ToolUseID: tc.ID,
 			Content:   resultText,
 			IsError:   isError,
-		})
+		}
+		if !isError && len(richParts) > 0 {
+			block.ToolResultParts = richParts
+		}
+		results = append(results, block)
 	}
 
 	if len(results) > 0 {
@@ -723,4 +746,26 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 		return "", err
 	}
 	return StateReadyForModel, nil
+}
+
+// summarizeToolResultParts renders an ExecuteRich result down to the flat
+// text every non-Anthropic consumer of a tool_result still expects
+// (tool_calls.result_json, Event.Result, and — via ContentBlock.Content,
+// which this feeds — the CLI transcript/TUI and every provider besides
+// Anthropic). Only Anthropic's translator reaches past this into
+// ToolResultParts for the images themselves.
+func summarizeToolResultParts(parts []message.ContentBlock) string {
+	var b strings.Builder
+	imageCount := 0
+	for _, p := range parts {
+		if p.Type == message.BlockText {
+			b.WriteString(p.Text)
+		} else if p.Type == message.BlockImage {
+			imageCount++
+		}
+	}
+	if imageCount > 0 {
+		fmt.Fprintf(&b, " [+%d image(s)]", imageCount)
+	}
+	return b.String()
 }

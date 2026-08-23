@@ -10,6 +10,7 @@ import (
 	"sort"
 	"sync"
 
+	"agentforge/internal/message"
 	"agentforge/internal/runtime"
 )
 
@@ -67,6 +68,21 @@ func (r *Registry) Tools(ctx context.Context, namespace string, cfg ServerConfig
 					return "", fmt.Errorf("%s", text)
 				}
 				return text, nil
+			},
+			// ExecuteRich is preferred by stepTools whenever it's set
+			// (see runtime.Tool.ExecuteRich) — Execute above stays as a
+			// flat-text fallback for any other caller (e.g.
+			// TestReconnectAfterProcessKilled calls .Execute directly).
+			ExecuteRich: func(ctx context.Context, input json.RawMessage) ([]message.ContentBlock, error) {
+				res, err := srv.callToolRaw(ctx, bareName, input)
+				if err != nil {
+					return nil, err
+				}
+				blocks := mcpContentToBlocks(res.Content)
+				if res.IsError {
+					return nil, fmt.Errorf("%s", flattenBlocksToText(blocks))
+				}
+				return blocks, nil
 			},
 		})
 	}

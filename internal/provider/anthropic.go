@@ -55,9 +55,24 @@ type anthropicContent struct {
 
 	// tool_result — travels in a "user"-role message immediately after
 	// the assistant turn that produced the tool_use it references.
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+	// Content is json.RawMessage rather than string because it holds
+	// either shape Anthropic's Messages API accepts here: a plain JSON
+	// string (every tool result before vision support) or a JSON array
+	// of sub-blocks (see anthropicToolResultContent) when one of them is
+	// an image — verified against the real API, not assumed.
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+
+	// Source is set only when Type == "image", nested inside a
+	// tool_result's Content array.
+	Source *anthropicImageSource `json:"source,omitempty"`
+}
+
+type anthropicImageSource struct {
+	Type      string `json:"type"` // "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthropicMessage struct {
@@ -108,13 +123,22 @@ type anthropicErrorBody struct {
 // this only has to translate roles and content blocks, not reorder them.
 func toAnthropicMessages(msgs []message.Message) []anthropicMessage {
 	var out []anthropicMessage
-	for _, m := range msgs {
+	for i, m := range msgs {
 		role := "user"
 		if m.Role == message.RoleAssistant {
 			role = "assistant"
 		}
 		// message.RoleTool travels as a "user"-role message carrying
 		// tool_result blocks — Anthropic has no separate tool role.
+
+		// keepImages is true only for the newest message in history — the
+		// one built immediately after tool execution, before this turn's
+		// model reply exists yet. On every later request that same
+		// message has slid off the end, so its images (if any) collapse
+		// to the text summary instead of being resent every turn: a
+		// multi-turn conversation with a screenshot tool would otherwise
+		// resend every prior screenshot on every single request.
+		keepImages := i == len(msgs)-1
 
 		var content []anthropicContent
 		for _, b := range m.Content {
@@ -135,7 +159,7 @@ func toAnthropicMessages(msgs []message.Message) []anthropicMessage {
 				// reaches the model — as a tool_result with is_error
 				// true, not a user-authored message, exactly as
 				// Anthropic requires.
-				content = append(content, anthropicContent{Type: "tool_result", ToolUseID: b.ToolUseID, Content: b.Content, IsError: b.IsError})
+				content = append(content, anthropicToolResultContent(b, keepImages))
 			}
 		}
 		if len(content) == 0 {
@@ -144,6 +168,40 @@ func toAnthropicMessages(msgs []message.Message) []anthropicMessage {
 		out = append(out, anthropicMessage{Role: role, Content: content})
 	}
 	return out
+}
+
+// anthropicToolResultContent builds the wire tool_result for one
+// message.BlockToolResult. When the block carries ToolResultParts (an MCP
+// tool's rich result) and keepImages is true, Content becomes a real JSON
+// array with the image nested as its own sub-block — the shape verified
+// live against the Messages API. Otherwise Content is the plain
+// (summarized, for a rich result) text string, identical to the
+// pre-vision wire format.
+func anthropicToolResultContent(b message.ContentBlock, keepImages bool) anthropicContent {
+	var contentJSON json.RawMessage
+	if len(b.ToolResultParts) > 0 && keepImages {
+		parts := make([]anthropicContent, 0, len(b.ToolResultParts))
+		for _, p := range b.ToolResultParts {
+			switch p.Type {
+			case message.BlockImage:
+				parts = append(parts, anthropicContent{Type: "image", Source: &anthropicImageSource{
+					Type: "base64", MediaType: p.ImageMediaType, Data: p.ImageData,
+				}})
+			case message.BlockText:
+				if p.Text != "" {
+					parts = append(parts, anthropicContent{Type: "text", Text: p.Text})
+				}
+			}
+		}
+		contentJSON, _ = json.Marshal(parts)
+	} else {
+		// b.Content already carries a text summary even when
+		// ToolResultParts is set (see runtime.summarizeToolResultParts),
+		// so this is also the "not the newest turn" replay path for a
+		// rich result, not just the plain-text-only case.
+		contentJSON, _ = json.Marshal(b.Content)
+	}
+	return anthropicContent{Type: "tool_result", ToolUseID: b.ToolUseID, Content: contentJSON, IsError: b.IsError}
 }
 
 func toAnthropicTools(tools []ToolDef) []anthropicTool {
