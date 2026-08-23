@@ -78,7 +78,12 @@ func TestAnthropicEndToEndRequireApprovalThenDeny(t *testing.T) {
 	st := openTestStore(t, filepath.Join(t.TempDir(), "test.db"))
 
 	script := newAnthropicScript(t,
-		anthropicToolUseResponse("toolu_1", "danger.tool", map[string]any{"x": float64(1)}),
+		// Real Anthropic can only ever send back "danger__tool" — it
+		// declared that mangled name in tools[0].name on the outbound
+		// request, since "danger.tool" would 400 the request outright
+		// (tools.0.custom.name must match ^[a-zA-Z0-9_-]{1,128}$). This
+		// fixture would have been a lie before the toWireToolName fix.
+		anthropicToolUseResponse("toolu_1", "danger__tool", map[string]any{"x": float64(1)}),
 		anthropicTextResponse("no problem, trying something else"),
 	)
 	srv := httptest.NewServer(script.handler())
@@ -122,6 +127,17 @@ func TestAnthropicEndToEndRequireApprovalThenDeny(t *testing.T) {
 	}
 	if executed {
 		t.Fatal("a denied tool must never execute")
+	}
+
+	// The exact field the 400 in the reported bug complains about: the
+	// dotted tool name must have been mangled before it ever reached
+	// Anthropic, on the very first request.
+	firstTools, ok := script.requests[0]["tools"].([]any)
+	if !ok || len(firstTools) != 1 {
+		t.Fatalf("expected 1 declared tool on the first request, got %+v", script.requests[0]["tools"])
+	}
+	if name := firstTools[0].(map[string]any)["name"]; name != "danger__tool" {
+		t.Fatalf("expected the declared tool name to be mangled to danger__tool, got %v", name)
 	}
 
 	// The crux of the "watch out for" warnings: on the resumed turn, the

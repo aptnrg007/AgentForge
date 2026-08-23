@@ -137,14 +137,6 @@ type openAIErrorBody struct {
 
 // --- translation ---
 
-// toWireToolName/fromWireToolName round-trip our namespaced tool names
-// ("github.search") through OpenAI's function-name charset
-// (^[a-zA-Z0-9_-]{1,64}$, no dots). Getting the outbound half right and
-// the inbound half wrong means every tool call comes back "unknown tool"
-// — see TestOpenAIToolNameRoundTrips.
-func toWireToolName(name string) string   { return strings.ReplaceAll(name, ".", "__") }
-func fromWireToolName(name string) string { return strings.ReplaceAll(name, "__", ".") }
-
 func toOpenAIMessages(system string, msgs []message.Message) []openAIMessage {
 	var out []openAIMessage
 	if system != "" {

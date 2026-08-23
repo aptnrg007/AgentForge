@@ -84,6 +84,50 @@ func TestMaxTokensOrDefault(t *testing.T) {
 	}
 }
 
+// TestAnthropicToolNameRoundTrips is the Anthropic mirror of
+// TestOpenAIToolNameRoundTrips: Anthropic rejects function names
+// containing "." (^[a-zA-Z0-9_-]{1,128}$), so every namespaced tool name
+// ("github.search") must survive being mapped to the wire charset and
+// back on all four sites that touch a tool name, or the very first
+// request 400s before any tool call happens.
+func TestAnthropicToolNameRoundTrips(t *testing.T) {
+	// Outbound: declaring a tool.
+	tools := toAnthropicTools([]ToolDef{{Name: "github.search", Description: "d", InputSchema: json.RawMessage(`{}`)}})
+	if len(tools) != 1 || tools[0].Name != "github__search" {
+		t.Fatalf("expected outbound tool name github__search, got %+v", tools)
+	}
+
+	// Outbound: replaying a tool_use block in history.
+	msgs := toAnthropicMessages([]message.Message{
+		{Role: message.RoleAssistant, Content: []message.ContentBlock{
+			{Type: message.BlockToolUse, ID: "toolu_1", Name: "github.search", Input: json.RawMessage(`{}`)},
+		}},
+	})
+	if len(msgs) != 1 || len(msgs[0].Content) != 1 || msgs[0].Content[0].Name != "github__search" {
+		t.Fatalf("expected the replayed tool_use name to be mangled, got %+v", msgs)
+	}
+
+	// Inbound: Complete's non-streaming path.
+	blocks := fromAnthropicContent([]anthropicContent{
+		{Type: "tool_use", ID: "toolu_1", Name: "github__search", Input: json.RawMessage(`{}`)},
+	})
+	if len(blocks) != 1 || blocks[0].Name != "github.search" {
+		t.Fatalf("expected the namespaced name to come back, got %+v", blocks)
+	}
+
+	// Inbound: the streaming path's Response() assembly.
+	s := &anthropicStream{blocks: []*anthropicContentAccum{
+		{blockType: "tool_use", id: "toolu_1", name: "github__search"},
+	}}
+	resp, err := s.Response()
+	if err != nil {
+		t.Fatalf("Response: %v", err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Name != "github.search" {
+		t.Fatalf("expected the streamed tool_use name to come back namespaced, got %+v", resp.Content)
+	}
+}
+
 // --- HTTP-level tests ---
 
 func newTestAnthropic(t *testing.T, handler http.HandlerFunc) *Anthropic {

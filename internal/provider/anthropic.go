@@ -128,7 +128,7 @@ func toAnthropicMessages(msgs []message.Message) []anthropicMessage {
 				if len(input) == 0 {
 					input = json.RawMessage("{}")
 				}
-				content = append(content, anthropicContent{Type: "tool_use", ID: b.ID, Name: b.Name, Input: input})
+				content = append(content, anthropicContent{Type: "tool_use", ID: b.ID, Name: toWireToolName(b.Name), Input: input})
 			case message.BlockToolResult:
 				// This is also where a denied approval's synthesized
 				// error ("tool call denied: ...", runtime.go's stepTools)
@@ -152,7 +152,7 @@ func toAnthropicTools(tools []ToolDef) []anthropicTool {
 	}
 	out := make([]anthropicTool, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		out = append(out, anthropicTool{Name: toWireToolName(t.Name), Description: t.Description, InputSchema: t.InputSchema})
 	}
 	return out
 }
@@ -170,7 +170,7 @@ func fromAnthropicContent(blocks []anthropicContent) []message.ContentBlock {
 			if len(input) == 0 {
 				input = json.RawMessage("{}")
 			}
-			out = append(out, message.ContentBlock{Type: message.BlockToolUse, ID: b.ID, Name: b.Name, Input: input})
+			out = append(out, message.ContentBlock{Type: message.BlockToolUse, ID: b.ID, Name: fromWireToolName(b.Name), Input: input})
 		}
 	}
 	return out
@@ -487,7 +487,7 @@ func (s *anthropicStream) Response() (*Response, error) {
 			if len(input) == 0 || !json.Valid(input) {
 				input = json.RawMessage("{}")
 			}
-			blocks = append(blocks, message.ContentBlock{Type: message.BlockToolUse, ID: b.id, Name: b.name, Input: input})
+			blocks = append(blocks, message.ContentBlock{Type: message.BlockToolUse, ID: b.id, Name: fromWireToolName(b.name), Input: input})
 		}
 	}
 	return &Response{Content: blocks, StopReason: normalizeAnthropicStopReason(s.stopReason), Usage: s.usage}, nil

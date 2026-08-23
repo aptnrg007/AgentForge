@@ -7,6 +7,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"agentforge/internal/message"
 )
@@ -18,6 +19,18 @@ type ToolDef struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 }
+
+// toWireToolName/fromWireToolName round-trip our namespaced tool names
+// ("github.search") through a provider function-name charset that
+// forbids dots — OpenAI's is ^[a-zA-Z0-9_-]{1,64}$, Anthropic's is
+// ^[a-zA-Z0-9_-]{1,128}$; both reject "." outright, so both providers
+// use this same translation. Getting the outbound half right and the
+// inbound half wrong means every tool call comes back "unknown tool" —
+// see TestOpenAIToolNameRoundTrips / TestAnthropicToolNameRoundTrips.
+// Gemini accepts dotted names natively (TestGeminiToolNamesStayDotted)
+// and Ollama has no name restriction at all, so neither uses this.
+func toWireToolName(name string) string   { return strings.ReplaceAll(name, ".", "__") }
+func fromWireToolName(name string) string { return strings.ReplaceAll(name, "__", ".") }
 
 type Request struct {
 	Model       string
