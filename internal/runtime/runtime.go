@@ -272,8 +272,20 @@ func NewEngine(st *store.Store, p provider.Provider, cfg Config) *Engine {
 	return &Engine{store: st, provider: p, tools: map[string]Tool{}, cfg: cfg, logger: logger}
 }
 
-func (e *Engine) RegisterTool(t Tool) {
+// RegisterTool adds t to the engine's tool set. Returns an error if a
+// tool with this name is already registered rather than silently
+// overwriting it — a tool_definitions entry named e.g. "github.foo"
+// used to be able to silently shadow MCP server "github"'s "foo" tool
+// (or vice versa, depending on registration order) with no signal that
+// happened, which is worse than a load-time error: the model would
+// believe it's calling one implementation while another one actually
+// runs.
+func (e *Engine) RegisterTool(t Tool) error {
+	if _, exists := e.tools[t.Name]; exists {
+		return fmt.Errorf("runtime: tool %q is already registered", t.Name)
+	}
 	e.tools[t.Name] = t
+	return nil
 }
 
 // ClearOutputPolicy turns off structured-output validation on an

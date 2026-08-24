@@ -55,6 +55,17 @@ linters:
         linters:
           - misspell
         text: "modle"
+      # RegisterTool now returns an error (a name collision), but the
+      # ~40 test-setup call sites that register one obviously-unique
+      # tool each have nothing meaningful to check — a real collision
+      # bug there would surface as a downstream assertion failure (the
+      # shadowed tool never gets called) anyway, not silently. Only test
+      # files are exempted; the one production call site
+      # (internal/agent/agent.go) still has to check it.
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "RegisterTool"
 
 issues:
   max-issues-per-linter: 0

@@ -81,9 +81,9 @@ nothing to reconcile.
 
 ## §9 — HTTP API
 
-`internal/api`. No auth in v0.1 — the daemon is meant for `127.0.0.1` only; adding
-auth before the daemon can safely leave localhost is a tracked follow-up. Routes
-create/list/inspect agents and runs, drive a
+`internal/api`. Auth is opt-in (`--auth-token`, see §15) — the daemon defaults to
+`127.0.0.1` with no token, which is a reasonable boundary on its own as long as it
+stays loopback-only. Routes create/list/inspect agents and runs, drive a
 run to its next stop point (`POST .../run`), stream progress over SSE
 (`POST .../stream`), and resolve pending approvals (`POST /v1/runs/{id}/approve`).
 Every handler reconstructs its `runtime.Engine` from the run's persisted YAML
@@ -182,3 +182,31 @@ Designing this surface is what motivated collapsing the three near-identical dri
 loops into `runtime.Engine.Run` (§ the lifecycle-holes work) — the SDK needed
 exactly one "step until a stop point" call, and duplicating internal/cli's
 bespoke one would have meant a fourth copy, not a third.
+
+## §15 — Security hardening
+
+`internal/mcp/server.go`'s `connect` used to build an MCP subprocess's environment
+with `os.Environ()` directly — every MCP server, a process whose behavior a model
+influences, inherited every secret the daemon's own environment held. It now uses
+the same minimal-environment pattern `internal/tools/command.go` already used for
+`command:`-backed tools (`PATH`/`HOME`/`LANG` plus whatever the server config's own
+`env:` adds) — same reasoning, independently duplicated rather than shared, since
+each package decided it on its own before either was aware of the other and there's
+no third caller yet to justify moving it somewhere shared.
+
+`runtime.Engine.RegisterTool` used to silently overwrite a name collision — a
+`tool_definitions` entry named e.g. `github.foo` could shadow MCP server
+`github`'s `foo` tool (or the reverse, depending on registration order) with no
+signal that happened, which is worse than a load-time error: the model believes
+it's calling one implementation while a different one actually runs. It now
+returns an error on a collision, and `agent.Build` propagates it.
+
+`internal/api`'s auth is bearer-token, opt-in via `--auth-token` /
+`api.Serve`'s/`api.NewServer`'s `authToken` parameter — empty (the default)
+disables it entirely, matching the daemon's pre-auth behavior exactly.
+`Server.requireAuth` wraps the mux (inside `logRequests`, so an unauthenticated
+attempt is still logged) and exempts only `/healthz`; the token comparison uses
+`crypto/subtle.ConstantTimeCompare` rather than `==`; `Serve` logs a startup
+warning when no token is set and `--addr` isn't loopback-only
+(`isLoopbackAddr`), since that combination is the one this was actually meant to
+prevent.

@@ -93,10 +93,7 @@ func (s *server) connect(ctx context.Context) (*mcpsdk.ClientSession, error) {
 	// Deliberately not exec.CommandContext: the subprocess must outlive any
 	// single request's context. The registry owns its lifetime via Close.
 	cmd := exec.Command(s.cfg.Command[0], s.cfg.Command[1:]...)
-	cmd.Env = os.Environ()
-	for k, v := range s.cfg.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = childEnv(s.cfg.Env)
 	// Many MCP servers are launched via a wrapper (npx, uvx, ...) that forks
 	// the real server and can exit without it. Putting the process in its
 	// own group lets a hard kill take down the whole tree, not just the
@@ -111,6 +108,29 @@ func (s *server) connect(ctx context.Context) (*mcpsdk.ClientSession, error) {
 	}
 	s.cmd = cmd
 	return session, nil
+}
+
+// minimalEnvVars and childEnv mirror internal/tools/command.go's
+// identically-named helpers — same reasoning, same list: a
+// model-driven MCP server that inherited the daemon's full environment
+// via os.Environ() (as this used to do) would hand every API key and
+// secret the daemon holds to a subprocess whose behavior the model
+// influences. Not shared code (both are unexported in their own
+// package) since the two decided this independently and there's no
+// third caller yet to justify a shared home for it.
+var minimalEnvVars = []string{"PATH", "HOME", "LANG"}
+
+func childEnv(overrides map[string]string) []string {
+	env := make([]string, 0, len(minimalEnvVars)+len(overrides))
+	for _, k := range minimalEnvVars {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	for k, v := range overrides {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 // discoverTools lists and caches the server's tools, connecting first if

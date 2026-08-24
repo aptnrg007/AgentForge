@@ -353,7 +353,11 @@ piped straight into `jq`; in text mode (the default) nothing changes.
 
 ## HTTP API
 
-`agentforge serve` binds `127.0.0.1:8080` by default. There's no auth in v0.1 — keep it on localhost.
+`agentforge serve` binds `127.0.0.1:8080` by default. Auth is opt-in:
+`--auth-token TOKEN` requires `Authorization: Bearer TOKEN` on every request but
+`/healthz`; with no token set, every request is unauthenticated, which is only a
+reasonable posture while `--addr` stays loopback-only (`serve` logs a warning at
+startup if it isn't). Set a token before pointing `--addr` at anything else.
 
 ```
 POST   /v1/agents                    # create/update from a YAML body

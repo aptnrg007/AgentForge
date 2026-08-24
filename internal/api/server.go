@@ -1,14 +1,19 @@
 // Package api implements the agentforge HTTP daemon described in
-// docs/DESIGN.md section 9. No auth in v0.1: bind to 127.0.0.1 and treat
-// that as the security boundary.
+// docs/DESIGN.md section 9. Auth is opt-in (--auth-token / the authToken
+// parameter below): binding to 127.0.0.1 with no token set is still the
+// default and still a reasonable security boundary on its own, but a
+// token is required before the daemon can safely listen on anything else.
 package api
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"agentforge/internal/agent"
@@ -21,9 +26,15 @@ type Server struct {
 	registry        *mcp.Registry
 	logger          *slog.Logger
 	providerFactory agent.ProviderFactory
+	// authToken, when non-empty, is required as "Authorization: Bearer
+	// <authToken>" on every request except /healthz. Empty (the default)
+	// means no auth at all, unchanged from before this existed.
+	authToken string
 }
 
-func NewServer(st *store.Store, registry *mcp.Registry, logger *slog.Logger) *Server {
+// NewServer builds a Server. authToken is optional ("" disables auth
+// entirely, matching agentforge's pre-auth behavior) — see Server.authToken.
+func NewServer(st *store.Store, registry *mcp.Registry, logger *slog.Logger, authToken string) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -32,6 +43,7 @@ func NewServer(st *store.Store, registry *mcp.Registry, logger *slog.Logger) *Se
 		registry:        registry,
 		logger:          logger,
 		providerFactory: agent.DefaultProviderFactory,
+		authToken:       authToken,
 	}
 }
 
@@ -50,7 +62,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleResume)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.handleCancel)
-	return s.logRequests(mux)
+	return s.logRequests(s.requireAuth(mux))
+}
+
+// requireAuth wraps h with a bearer-token check when s.authToken is set
+// — /healthz is exempt (a liveness probe has no business needing a
+// secret, and can't always attach headers) but every other route
+// requires "Authorization: Bearer <authToken>" or gets a 401. A nil-op
+// wrapper when s.authToken == "", matching agentforge's pre-auth
+// behavior exactly.
+func (s *Server) requireAuth(h http.Handler) http.Handler {
+	if s.authToken == "" {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			h.ServeHTTP(w, r)
+			return
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		// constant-time compare: a naive == leaks how many leading bytes
+		// of a guessed token matched via response timing.
+		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
+			writeError(w, http.StatusUnauthorized, fmt.Errorf(`missing or invalid bearer token`))
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // logRequests wraps h with one Info line per request — method, path,
@@ -95,13 +133,18 @@ func (sw *statusWriter) Flush() {
 }
 
 // Serve runs the HTTP daemon until ctx is cancelled, then shuts it down
-// gracefully (in-flight requests get up to 10s to finish).
-func Serve(ctx context.Context, addr string, st *store.Store, registry *mcp.Registry, logger *slog.Logger) error {
+// gracefully (in-flight requests get up to 10s to finish). authToken, if
+// non-empty, is required on every request but /healthz — see Server.authToken.
+func Serve(ctx context.Context, addr string, st *store.Store, registry *mcp.Registry, logger *slog.Logger, authToken string) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	srv := NewServer(st, registry, logger)
+	srv := NewServer(st, registry, logger, authToken)
 	httpServer := &http.Server{Addr: addr, Handler: srv.Handler()}
+
+	if authToken == "" && !isLoopbackAddr(addr) {
+		logger.Warn("api: no --auth-token set and addr is not loopback-only; every request is unauthenticated", "addr", addr)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -125,6 +168,23 @@ func Serve(ctx context.Context, addr string, st *store.Store, registry *mcp.Regi
 	case err := <-errCh:
 		return err
 	}
+}
+
+// isLoopbackAddr reports whether addr (a "host:port" listen address, as
+// passed to --addr) only binds loopback — used solely to decide whether
+// Serve's no-auth-token warning fires. An empty or unparseable host is
+// treated as non-loopback (binds every interface, or is malformed enough
+// that ListenAndServe will reject it momentarily anyway): the warning
+// erring toward firing is the safer default here.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	return net.ParseIP(host).IsLoopback()
 }
 
 func newRunID() string {

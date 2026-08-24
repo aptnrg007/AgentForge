@@ -119,7 +119,9 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		return nil, err
 	}
 	for _, t := range tools {
-		eng.RegisterTool(t)
+		if err := eng.RegisterTool(t); err != nil {
+			return nil, err
+		}
 	}
 
 	return eng, nil

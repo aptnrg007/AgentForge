@@ -11,7 +11,7 @@ import (
 )
 
 func newServeCmd() *cobra.Command {
-	var addr, dbPath string
+	var addr, dbPath, authToken string
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -34,11 +34,12 @@ func newServeCmd() *cobra.Command {
 			// cmd.Context() is already SIGINT/SIGTERM-cancellable — see
 			// main.go and root.go's Execute — so no need for serve to
 			// install its own signal handling anymore.
-			return api.Serve(cmd.Context(), addr, st, registry, logger)
+			return api.Serve(cmd.Context(), addr, st, registry, logger, authToken)
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "address to listen on (no auth in v0.1: keep this on localhost)")
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "address to listen on (safe to leave unauthenticated only while this stays loopback-only)")
 	cmd.Flags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store")
+	cmd.Flags().StringVar(&authToken, "auth-token", "", `require "Authorization: Bearer <token>" on every request but /healthz; empty (default) means no auth`)
 	return cmd
 }
