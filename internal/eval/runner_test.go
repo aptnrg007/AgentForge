@@ -241,3 +241,59 @@ cases:
 		t.Fatalf("expected both model runs to pass, got %+v", result.Runs)
 	}
 }
+
+// TestRunSuiteAssertsFinalStateInterrupted covers final_state: interrupted
+// end to end through the eval harness. This has to run --live rather than
+// --replay: a replay fixture (internal/provider/replay.Turn) only ever
+// scripts a successful Response, with no way to represent a provider
+// error, so simulating an exhausted retry budget needs a real (fake)
+// ProviderFactory the way TestRunSuiteLiveModelOverrideRunsOncePerModel
+// uses one above.
+func TestRunSuiteAssertsFinalStateInterrupted(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "agent.yaml"), testAgentYAML+"retry:\n  max_attempts: 2\n  initial_delay: 1ms\n  max_delay: 2ms\n")
+	writeFile(t, filepath.Join(dir, "suite.yaml"), `agent: agent.yaml
+cases:
+  - name: hits a rate limit
+    input: hi
+    expect:
+      final_state: interrupted
+`)
+	suite, err := Load(filepath.Join(dir, "suite.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	factory := func(config.ModelConfig) (provider.Provider, error) {
+		return &alwaysErrorProvider{err: &provider.Error{Provider: "x", StatusCode: 503, Message: "unavailable"}}, nil
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunOptions{
+		Mode: ModeLive, Root: dir, ProviderFactory: factory,
+	})
+	if err != nil {
+		t.Fatalf("RunSuite: %v", err)
+	}
+	if !result.Passed() {
+		t.Fatalf("expected the interrupted case to pass its final_state assertion, got %+v", result.Runs[0].Cases[0])
+	}
+}
+
+// alwaysErrorProvider fails every Complete/Stream call with a scripted
+// error — the same shape internal/api's test file uses, reimplemented
+// here since the two packages' test-only types aren't shared.
+type alwaysErrorProvider struct {
+	err error
+}
+
+func (p *alwaysErrorProvider) Name() string { return "always-error" }
+
+func (p *alwaysErrorProvider) Complete(ctx context.Context, r provider.Request) (*provider.Response, error) {
+	return nil, p.err
+}
+
+func (p *alwaysErrorProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	return nil, p.err
+}
+
+func (p *alwaysErrorProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }

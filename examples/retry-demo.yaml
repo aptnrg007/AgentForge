@@ -1,0 +1,26 @@
+name: retry-demo
+
+model:
+  provider: anthropic
+  name: claude-sonnet-5
+  temperature: 0.2
+  api_key: ${ANTHROPIC_API_KEY}
+
+instructions: |
+  You are a helpful assistant. Answer the user's question directly.
+
+# retry: is on by default with these same values (see README.md's
+# "Provider retries" section) — this agent writes them out explicitly so
+# the block below has something concrete to point at and to make tuning
+# it for a specific provider or workload easy to see the shape of.
+retry:
+  max_attempts: 3          # total attempts including the first; 1 disables retries
+  initial_delay: 1s        # before the first retry; roughly doubles (with jitter) after that
+  max_delay: 30s           # cap on a single backoff sleep
+  max_elapsed: 2m          # cap on total time spent retrying one call
+  on_network_error: true   # also retry a dropped connection, not just an HTTP status
+  on_exhausted: interrupt  # leave the run resumable instead of failing it outright
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

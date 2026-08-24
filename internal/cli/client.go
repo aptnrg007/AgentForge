@@ -31,11 +31,12 @@ type remotePendingCall struct {
 }
 
 type remoteRun struct {
-	RunID    string              `json:"run_id"`
-	State    string              `json:"state"`
-	Error    *string             `json:"error,omitempty"`
-	Messages []message.Message   `json:"messages,omitempty"`
-	Pending  []remotePendingCall `json:"pending,omitempty"`
+	RunID     string              `json:"run_id"`
+	State     string              `json:"state"`
+	Error     *string             `json:"error,omitempty"`
+	Messages  []message.Message   `json:"messages,omitempty"`
+	Pending   []remotePendingCall `json:"pending,omitempty"`
+	Resumable bool                `json:"resumable,omitempty"`
 }
 
 type remoteRunSummary struct {
@@ -84,32 +85,40 @@ type apiErrorBody struct {
 	Error string `json:"error"`
 }
 
-func apiGet(ctx context.Context, url string, out any) error {
+func apiGet(ctx context.Context, url, token string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	return doAPIRequest(req, out)
+	return doAPIRequest(req, token, out)
 }
 
-func apiPost(ctx context.Context, url, contentType string, body []byte, out any) error {
+func apiPost(ctx context.Context, url, contentType string, body []byte, token string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", contentType)
-	return doAPIRequest(req, out)
+	return doAPIRequest(req, token, out)
 }
 
-func apiDelete(ctx context.Context, url string) error {
+func apiDelete(ctx context.Context, url, token string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		return err
 	}
-	return doAPIRequest(req, nil)
+	return doAPIRequest(req, token, nil)
 }
 
-func doAPIRequest(req *http.Request, out any) error {
+// doAPIRequest issues req against the daemon, setting a bearer
+// Authorization header when token is non-empty — the client-side half of
+// serve --auth-token (internal/api/server.go's requireAuth). token is
+// typically empty (no auth configured) so this stays a no-op for the
+// common case.
+func doAPIRequest(req *http.Request, token string, out any) error {
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

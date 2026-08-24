@@ -377,6 +377,77 @@ tool_policy:
 			wantErr: "overrides[0].timeout:",
 		},
 		{
+			name: "retry max_attempts too high",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  max_attempts: 21
+`,
+			wantErr: "max_attempts: must be between 0 and 20",
+		},
+		{
+			name: "retry negative max_attempts",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  max_attempts: -1
+`,
+			wantErr: "max_attempts: must be between 0 and 20",
+		},
+		{
+			name: "unparseable retry initial_delay",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  initial_delay: soon
+`,
+			wantErr: "initial_delay:",
+		},
+		{
+			name: "zero retry max_delay",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  max_delay: 0s
+`,
+			wantErr: `max_delay: must be > 0, got "0s"`,
+		},
+		{
+			name: "retry initial_delay greater than max_delay",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  initial_delay: 1m
+  max_delay: 30s
+`,
+			wantErr: "initial_delay (1m) must be <= max_delay (30s)",
+		},
+		{
+			name: "unknown retry on_exhausted",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  on_exhausted: sometimes
+`,
+			wantErr: `on_exhausted: unknown value "sometimes"`,
+		},
+		{
+			name: "unknown key under retry",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+retry:
+  max_attemps: 3
+`,
+			wantErr: `unknown field "max_attemps"`,
+		},
+		{
 			name: "tool_definitions missing name",
 			yaml: `
 name: bad
@@ -737,6 +808,20 @@ func TestLoadCodebaseNotesExample(t *testing.T) {
 	}
 }
 
+func TestLoadRetryDemoExample(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	cfg, err := Load("../../examples/retry-demo.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retry.MaxAttempts != 3 {
+		t.Errorf("retry.max_attempts = %d, want 3", cfg.Retry.MaxAttempts)
+	}
+	if cfg.Retry.OnExhausted != "interrupt" {
+		t.Errorf("retry.on_exhausted = %q, want %q", cfg.Retry.OnExhausted, "interrupt")
+	}
+}
+
 func TestLoadNotifierExample(t *testing.T) {
 	cfg, err := Load("../../examples/notifier.yaml")
 	if err != nil {
@@ -780,6 +865,58 @@ tool_policy:
 	}
 	if got := cfg.ToolPolicy.Overrides[1]; len(got.Tools) != 2 || got.Tools[1] != "build.*" || got.Timeout != "10m" {
 		t.Errorf("overrides[1] = %+v, want tools=[render.video build.*] timeout=10m", got)
+	}
+}
+
+// TestLoadRetryConfigDefaults covers the absent-block case: no retry:
+// section at all must parse to the zero RetryConfig, so agent.retryPolicy
+// resolves every field to its own default (see RetryConfig's doc
+// comment) rather than validate() rejecting a config that never opted in.
+func TestLoadRetryConfigDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model: {provider: ollama, name: foo}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Retry != (RetryConfig{}) {
+		t.Errorf("Retry = %+v, want the zero value", cfg.Retry)
+	}
+}
+
+func TestLoadRetryConfig(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model: {provider: ollama, name: foo}
+retry:
+  max_attempts: 5
+  initial_delay: 2s
+  max_delay: 1m
+  max_elapsed: 5m
+  on_network_error: true
+  on_exhausted: fail
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Retry.MaxAttempts != 5 {
+		t.Errorf("retry.max_attempts = %d, want 5", cfg.Retry.MaxAttempts)
+	}
+	if cfg.Retry.InitialDelay != "2s" {
+		t.Errorf("retry.initial_delay = %q, want %q", cfg.Retry.InitialDelay, "2s")
+	}
+	if cfg.Retry.MaxDelay != "1m" {
+		t.Errorf("retry.max_delay = %q, want %q", cfg.Retry.MaxDelay, "1m")
+	}
+	if cfg.Retry.MaxElapsed != "5m" {
+		t.Errorf("retry.max_elapsed = %q, want %q", cfg.Retry.MaxElapsed, "5m")
+	}
+	if cfg.Retry.OnNetworkError == nil || !*cfg.Retry.OnNetworkError {
+		t.Errorf("retry.on_network_error = %v, want true", cfg.Retry.OnNetworkError)
+	}
+	if cfg.Retry.OnExhausted != "fail" {
+		t.Errorf("retry.on_exhausted = %q, want %q", cfg.Retry.OnExhausted, "fail")
 	}
 }
 

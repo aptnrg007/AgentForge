@@ -205,7 +205,8 @@ func runCase(ctx context.Context, suite *Suite, cfg *config.Config, c Case, opts
 			return res
 		}
 		if state == runtime.StateCompleted || state == runtime.StateFailed ||
-			state == runtime.StateCancelled || state == runtime.StateAwaitingApproval {
+			state == runtime.StateCancelled || state == runtime.StateAwaitingApproval ||
+			state == runtime.StateInterrupted {
 			break
 		}
 	}

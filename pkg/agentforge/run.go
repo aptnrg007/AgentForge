@@ -12,7 +12,8 @@ import (
 )
 
 // Run is one run's outcome as of the moment Run/Resume returned:
-// completed, failed, cancelled, or awaiting_approval (see Pending).
+// completed, failed, cancelled, awaiting_approval (see Pending), or
+// interrupted (see Resumable).
 type Run struct {
 	ID    string
 	State string
@@ -22,12 +23,19 @@ type Run struct {
 	// JSON yourself if you need the typed value, since Run doesn't know
 	// the schema's Go shape.
 	Output string
-	// Error explains a "failed" State; empty otherwise.
+	// Error explains a "failed" or "interrupted" State; empty otherwise.
 	Error string
 	// Pending lists the tool calls awaiting a decision when State is
 	// "awaiting_approval" — resolve each with Approve or Deny, then call
 	// Resume.
 	Pending []PendingCall
+	// Resumable is true only when State is "interrupted": the run's
+	// retry budget ran out on what looked like a transient provider
+	// error (a rate limit, an outage), so it's left non-terminal —
+	// call Resume once the condition has had a chance to clear, no
+	// Approve/Deny needed first. Always false for every other State,
+	// including "awaiting_approval" (see Pending instead).
+	Resumable bool
 }
 
 // PendingCall is one tool call waiting on a human (or programmatic)
@@ -39,7 +47,7 @@ type PendingCall struct {
 }
 
 // Run starts a new run with userMessage and drives it to its next stop
-// point — completed, failed, cancelled, or awaiting_approval.
+// point — completed, failed, cancelled, awaiting_approval, or interrupted.
 func (a *Agent) Run(ctx context.Context, userMessage string, opts ...RunOption) (*Run, error) {
 	var o runOptions
 	for _, opt := range opts {
@@ -156,6 +164,8 @@ func (a *Agent) buildRun(ctx context.Context, runID string, state runtime.State)
 		for i, tc := range pending {
 			out.Pending[i] = PendingCall{CallID: tc.ID, Tool: tc.ToolName, Args: json.RawMessage(tc.ArgsJSON)}
 		}
+	case runtime.StateInterrupted:
+		out.Resumable = true
 	}
 	return out, nil
 }

@@ -131,6 +131,32 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 
 	case runtime.StateCancelled:
 		return fmt.Errorf("run %s was cancelled", runID)
+
+	case runtime.StateInterrupted:
+		// Unlike awaiting_approval, there's nothing to decide first — the
+		// run just needs a later `runs resume` once whatever it hit (a
+		// rate limit, an outage) has had a chance to clear. Still a
+		// non-zero exit, so a script chaining on `agentforge run` notices,
+		// but a distinguishable message and error shape from a genuine
+		// failure.
+		msgs, mErr := st.ListMessages(ctx, runID)
+		run, gErr := st.GetRun(ctx, runID)
+		if gErr != nil {
+			return gErr
+		}
+		errStr := "unknown error"
+		if run.Error != nil {
+			errStr = *run.Error
+		}
+		if mErr == nil {
+			if err := emitOutcome(o, runResult{
+				RunID: runID, State: string(state), Messages: msgs, Error: &errStr,
+				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet, Resumable: true,
+			}); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("run %s was interrupted: %s (resume with: agentforge runs resume %s)", runID, errStr, runID)
 	}
 	return fmt.Errorf("run %s: unexpected state %q", runID, state)
 }

@@ -123,7 +123,10 @@ func (s *Server) streamRun(ctx context.Context, sse *sseWriter, eng *runtime.Eng
 			}
 			sse.send("awaiting_approval", awaitingApprovalEvent{RunID: runID, Pending: dtoPending})
 			return
-		case runtime.StateCompleted, runtime.StateFailed, runtime.StateCancelled:
+		case runtime.StateCompleted, runtime.StateFailed, runtime.StateCancelled, runtime.StateInterrupted:
+			// StateInterrupted stops the stream the same way a terminal
+			// state does — a loop with no case for it would spin — even
+			// though the run itself is still resumable (POST .../resume).
 			run, err := s.store.GetRun(ctx, runID)
 			if err != nil {
 				sse.send("done", doneEvent{RunID: runID, State: string(state)})

@@ -10,7 +10,7 @@ import (
 // created by an older binary needs migrations, below, to reach the same
 // shape — schema.sql's CREATE TABLE IF NOT EXISTS is a no-op against a
 // table that already exists, so it can't add a column to one.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migration adds a schema_version's worth of ALTER TABLE statements,
 // applied to a database that predates it. A migration's Stmts must bring
@@ -33,6 +33,20 @@ var migrations = []migration{
 			`ALTER TABLE messages ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE tool_calls ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`,
 		},
+	},
+	{
+		// version 3 adds no columns — runs.state's "interrupted" value
+		// (internal/runtime.StateInterrupted) needs no DDL at all: state
+		// is a plain TEXT column with no CHECK constraint or enum table
+		// (see schema.sql). This entry exists purely so an older binary
+		// opening a database that already has interrupted runs in it gets
+		// migrateSchema's clear "newer than this binary supports" error
+		// instead of silently hot-looping: without a version bump, that
+		// binary's Step would hit its unrecognized-state default case
+		// (return the state unchanged) and Run would loop on it forever,
+		// since its stop set predates this state too.
+		version: 3,
+		stmts:   nil,
 	},
 }
 

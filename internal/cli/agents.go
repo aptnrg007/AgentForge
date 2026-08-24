@@ -10,14 +10,14 @@ import (
 )
 
 func newAgentsCmd() *cobra.Command {
-	var server, dbPath string
+	var server, dbPath, authToken string
 
 	list := &cobra.Command{
 		Use:   "list",
 		Short: "List agents",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return agentsList(cmd.Context(), server, dbPath)
+			return agentsList(cmd.Context(), server, dbPath, authToken)
 		},
 	}
 	get := &cobra.Command{
@@ -25,7 +25,7 @@ func newAgentsCmd() *cobra.Command {
 		Short: "Print one agent's YAML",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return agentsGet(cmd.Context(), server, dbPath, args[0])
+			return agentsGet(cmd.Context(), server, dbPath, authToken, args[0])
 		},
 	}
 	del := &cobra.Command{
@@ -33,21 +33,22 @@ func newAgentsCmd() *cobra.Command {
 		Short: "Delete an agent",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return agentsDelete(cmd.Context(), server, dbPath, args[0])
+			return agentsDelete(cmd.Context(), server, dbPath, authToken, args[0])
 		},
 	}
 
 	cmd := &cobra.Command{Use: "agents", Short: "Manage agents"}
 	cmd.PersistentFlags().StringVar(&server, "server", "", "daemon URL, e.g. http://localhost:8080 (defaults to the local --db store)")
 	cmd.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (used when --server is not set)")
+	cmd.PersistentFlags().StringVar(&authToken, "auth-token", defaultAuthToken(), "bearer token for --server, if it was started with its own --auth-token (default: $AGENTFORGE_AUTH_TOKEN)")
 	cmd.AddCommand(list, get, del)
 	return cmd
 }
 
-func agentsList(ctx context.Context, server, dbPath string) error {
+func agentsList(ctx context.Context, server, dbPath, authToken string) error {
 	if server != "" {
 		var agents []remoteAgent
-		if err := apiGet(ctx, server+"/v1/agents", &agents); err != nil {
+		if err := apiGet(ctx, server+"/v1/agents", authToken, &agents); err != nil {
 			return err
 		}
 		for _, a := range agents {
@@ -75,10 +76,10 @@ func agentsList(ctx context.Context, server, dbPath string) error {
 	return nil
 }
 
-func agentsGet(ctx context.Context, server, dbPath, name string) error {
+func agentsGet(ctx context.Context, server, dbPath, authToken, name string) error {
 	if server != "" {
 		var ag remoteAgent
-		if err := apiGet(ctx, server+"/v1/agents/"+name, &ag); err != nil {
+		if err := apiGet(ctx, server+"/v1/agents/"+name, authToken, &ag); err != nil {
 			return err
 		}
 		fmt.Print(ag.YAML)
@@ -102,9 +103,9 @@ func agentsGet(ctx context.Context, server, dbPath, name string) error {
 	return nil
 }
 
-func agentsDelete(ctx context.Context, server, dbPath, name string) error {
+func agentsDelete(ctx context.Context, server, dbPath, authToken, name string) error {
 	if server != "" {
-		return apiDelete(ctx, server+"/v1/agents/"+name)
+		return apiDelete(ctx, server+"/v1/agents/"+name, authToken)
 	}
 
 	if err := ensureDBDir(dbPath); err != nil {

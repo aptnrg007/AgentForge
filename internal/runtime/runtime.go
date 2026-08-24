@@ -29,6 +29,15 @@ const (
 	StateCompleted        State = "completed"
 	StateFailed           State = "failed"
 	StateCancelled        State = "cancelled"
+	// StateInterrupted is a non-terminal state (unlike Failed/Cancelled/
+	// Completed): a model call's retry budget (internal/provider.WithRetry)
+	// ran out on what looked like a transient condition — a rate limit, an
+	// outage — that may since have cleared, so the run is left resumable
+	// (agentforge runs resume, POST /v1/runs/{id}/resume, Engine.Run) rather
+	// than failed outright. Reached only when Config.OnRetriesExhausted is
+	// "interrupt" (the default); "fail" keeps the pre-retry behavior of
+	// ending the run. See stepModel's provider-error branch.
+	StateInterrupted State = "interrupted"
 )
 
 // maxRepairAttempts is how many consecutive self-correction turns are
@@ -237,6 +246,17 @@ type Config struct {
 	// pre-existing behavior; agent.Build sets this from limits.timeout.
 	// See Step for where the deadline is actually derived and applied.
 	RunTimeout time.Duration
+	// OnRetriesExhausted is "interrupt" (default, empty) or "fail". It
+	// governs what stepModel does when a provider call's retry budget
+	// (internal/provider.WithRetry) is spent: "interrupt" leaves the run
+	// in StateInterrupted — non-terminal, resumable via
+	// Engine.Run/agentforge runs resume, since the condition that
+	// exhausted it (a rate limit, an outage) may since have cleared —
+	// "fail" ends the run the same way any other provider error always
+	// has. Has no effect unless agent.Build's retry: config actually
+	// enables retries; agent.retryPolicy/onRetriesExhausted resolve both
+	// from the same config.RetryConfig.
+	OnRetriesExhausted string
 	// Logger receives one line per run-started and per state transition,
 	// with a run_id field so a multi-run process's log can be filtered
 	// down to one run. nil means slog.Default() — matching mcp.NewRegistry
@@ -387,7 +407,13 @@ func (e *Engine) Step(ctx context.Context, runID string) (State, error) {
 
 	var state State
 	switch State(run.State) {
-	case StateReadyForModel:
+	case StateReadyForModel, StateInterrupted:
+		// StateInterrupted resumes exactly like ready_for_model: the run's
+		// retry budget ran out, not the model's turn — no assistant message
+		// was ever produced for the interrupted call (see stepModel's
+		// provider-error branch, which deliberately doesn't advance
+		// TurnCount for it), so there's nothing to redo before calling the
+		// model again. This one shared case is the entire resume mechanism.
 		state, err = e.stepModel(ctx, run)
 	case StateReadyForTools:
 		state, err = e.stepTools(ctx, run)
@@ -501,6 +527,11 @@ func (e *Engine) EditPendingCallArgs(ctx context.Context, callID string, args js
 // reset to zero. Shared by Cancel (an explicit stop request) and
 // EndIfContextDone (a drive loop's dead-ctx fallback) — the two differ
 // only in which terminal state and reason they end up wanting.
+//
+// StateInterrupted is deliberately absent from the switch below: it's
+// non-terminal (see its own doc comment), so a run left there must stay
+// cancellable via Cancel — an outage a user has no intention of waiting
+// out shouldn't need to resume-then-cancel just to stop.
 func (e *Engine) endRun(ctx context.Context, runID string, state State, reason string) (State, error) {
 	run, err := e.store.GetRun(ctx, runID)
 	if err != nil {
@@ -565,7 +596,8 @@ func (e *Engine) EndIfContextDone(ctx context.Context, runID string) State {
 }
 
 // Run steps runID until it reaches a stop point — completed, failed,
-// cancelled, or awaiting_approval — and returns the state it stopped at.
+// cancelled, awaiting_approval, or interrupted — and returns the state it
+// stopped at.
 // This is the shared core of what used to be three near-identical drive
 // loops (internal/cli/localrun.go, internal/api/handlers.go,
 // internal/api/stream.go): check ctx before every Step (so a
@@ -601,7 +633,7 @@ func (e *Engine) Run(ctx context.Context, runID string) (State, error) {
 			return "", err
 		}
 		switch state {
-		case StateCompleted, StateFailed, StateCancelled, StateAwaitingApproval:
+		case StateCompleted, StateFailed, StateCancelled, StateAwaitingApproval, StateInterrupted:
 			return state, nil
 		}
 		// ready_for_model / ready_for_tools: keep stepping.
@@ -697,14 +729,24 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		// StateCancelled, not StateFailed; context.DeadlineExceeded means
 		// limits.timeout (or a future caller deadline) was hit.
 		state, reason := StateFailed, fmt.Sprintf("provider error: %v", err)
+		// persistedTurnCount is turnCount (the call counts as a used turn)
+		// for every case except StateInterrupted below, which overrides it
+		// back to run.TurnCount: a call whose retry budget ran out never
+		// produced an assistant message, so charging it against MaxTurns
+		// would silently erode a resumable run's turn budget across
+		// repeated outages, one interruption at a time.
+		persistedTurnCount := turnCount
+		var exhausted *provider.RetriesExhaustedError
 		switch {
 		case errors.Is(ctx.Err(), context.Canceled):
 			state, reason = StateCancelled, "run cancelled"
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			reason = "run exceeded its time limit: " + reason
+		case errors.As(err, &exhausted) && e.cfg.OnRetriesExhausted != "fail":
+			state, persistedTurnCount = StateInterrupted, run.TurnCount
 		}
 		pctx, cancel := terminalCtx(ctx)
-		uerr := e.store.UpdateRun(pctx, run.ID, string(state), turnCount, run.RepairCount, &reason)
+		uerr := e.store.UpdateRun(pctx, run.ID, string(state), persistedTurnCount, run.RepairCount, &reason)
 		cancel()
 		if uerr != nil {
 			return "", uerr

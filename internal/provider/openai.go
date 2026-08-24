@@ -291,7 +291,7 @@ func (o *OpenAI) doRequest(ctx context.Context, body openAIChatRequest) (*http.R
 
 	resp, err := o.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai: request failed: %w", err)
+		return nil, newTransportError("openai", err)
 	}
 	return resp, nil
 }
@@ -302,7 +302,7 @@ func (o *OpenAI) Complete(ctx context.Context, r Request) (*Response, error) {
 		return nil, err
 	}
 	var cr openAIChatResponse
-	if err := decodeResponse("openai", resp, openAIErrorMessage, &cr); err != nil {
+	if err := decodeResponse("openai", resp, openAIErrorMessage, nil, &cr); err != nil {
 		return nil, err
 	}
 	if len(cr.Choices) == 0 {
@@ -329,7 +329,7 @@ func (o *OpenAI) Stream(ctx context.Context, r Request) (Stream, error) {
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai: status %d: %s", resp.StatusCode, openAIErrorMessage(respBody))
+		return nil, newStatusError("openai", resp, respBody, openAIErrorMessage(respBody), nil)
 	}
 	return &openAIStream{
 		body:      resp.Body,

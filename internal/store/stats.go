@@ -16,7 +16,12 @@ type Stats struct {
 	CompletedRuns int
 	FailedRuns    int
 	CancelledRuns int
-	// OtherRuns is TotalRuns minus the three above — runs still in
+	// InterruptedRuns is a run whose retry budget ran out on a
+	// transient-looking provider error (runtime.StateInterrupted) —
+	// non-terminal and resumable, counted separately from OtherRuns so
+	// "still retryable" doesn't get lumped in with "still in flight".
+	InterruptedRuns int
+	// OtherRuns is TotalRuns minus the four above — runs still in
 	// flight (ready_for_model, ready_for_tools) or awaiting_approval at
 	// the moment Stats ran.
 	OtherRuns int
@@ -56,21 +61,23 @@ func (s *Store) Stats(ctx context.Context, agentName string) (*Stats, error) {
 		SELECT COUNT(*), COALESCE(AVG(turn_count), 0),
 		       SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END),
 		       SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN state = 'cancelled' THEN 1 ELSE 0 END)
+		       SUM(CASE WHEN state = 'cancelled' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN state = 'interrupted' THEN 1 ELSE 0 END)
 		FROM runs`
 	var args []any
 	if agentName != "" {
 		runQuery += ` WHERE agent_name = ?`
 		args = append(args, agentName)
 	}
-	var completed, failed, cancelled sql.NullInt64
+	var completed, failed, cancelled, interrupted sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, runQuery, args...).Scan(
-		&stats.TotalRuns, &stats.AvgTurns, &completed, &failed, &cancelled,
+		&stats.TotalRuns, &stats.AvgTurns, &completed, &failed, &cancelled, &interrupted,
 	); err != nil {
 		return nil, fmt.Errorf("store: stats: %w", err)
 	}
 	stats.CompletedRuns, stats.FailedRuns, stats.CancelledRuns = int(completed.Int64), int(failed.Int64), int(cancelled.Int64)
-	stats.OtherRuns = stats.TotalRuns - stats.CompletedRuns - stats.FailedRuns - stats.CancelledRuns
+	stats.InterruptedRuns = int(interrupted.Int64)
+	stats.OtherRuns = stats.TotalRuns - stats.CompletedRuns - stats.FailedRuns - stats.CancelledRuns - stats.InterruptedRuns
 
 	toolQuery := `
 		SELECT COUNT(*), SUM(CASE WHEN tc.is_error = 1 THEN 1 ELSE 0 END)

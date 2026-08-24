@@ -47,6 +47,15 @@ func TestStatsAggregatesAcrossRunStatesToolsAndTokens(t *testing.T) {
 		t.Fatalf("UpdateRun: %v", err)
 	}
 
+	// run-1b: interrupted, 0 turns (the retry budget ran out before any
+	// assistant message was ever produced — see runtime.stepModel).
+	if err := st.CreateRun(ctx, "run-1b", "agent-a", "ready_for_model"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := st.UpdateRun(ctx, "run-1b", "interrupted", 0, 0, nil); err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
 	// run-3: a different agent entirely — must not pollute agent-a's stats.
 	if err := st.EnsureAgentExists(ctx, "agent-b"); err != nil {
 		t.Fatalf("EnsureAgentExists: %v", err)
@@ -62,26 +71,32 @@ func TestStatsAggregatesAcrossRunStatesToolsAndTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
-	if stats.TotalRuns != 2 {
-		t.Errorf("TotalRuns = %d, want 2", stats.TotalRuns)
+	if stats.TotalRuns != 3 {
+		t.Errorf("TotalRuns = %d, want 3", stats.TotalRuns)
 	}
 	if stats.CompletedRuns != 1 || stats.FailedRuns != 1 || stats.CancelledRuns != 0 {
 		t.Errorf("CompletedRuns=%d FailedRuns=%d CancelledRuns=%d, want 1,1,0", stats.CompletedRuns, stats.FailedRuns, stats.CancelledRuns)
 	}
-	if stats.AvgTurns != 3 { // (2 + 4) / 2
-		t.Errorf("AvgTurns = %v, want 3", stats.AvgTurns)
+	if stats.InterruptedRuns != 1 {
+		t.Errorf("InterruptedRuns = %d, want 1", stats.InterruptedRuns)
+	}
+	if stats.OtherRuns != 0 {
+		t.Errorf("OtherRuns = %d, want 0 (interrupted must count in InterruptedRuns, not OtherRuns)", stats.OtherRuns)
+	}
+	if stats.AvgTurns != 2 { // (2 + 4 + 0) / 3
+		t.Errorf("AvgTurns = %v, want 2", stats.AvgTurns)
 	}
 	if stats.TotalToolCalls != 2 || stats.FailedToolCalls != 1 {
 		t.Errorf("TotalToolCalls=%d FailedToolCalls=%d, want 2,1", stats.TotalToolCalls, stats.FailedToolCalls)
 	}
-	if stats.AvgToolCalls != 1 { // 2 calls / 2 runs
-		t.Errorf("AvgToolCalls = %v, want 1", stats.AvgToolCalls)
+	if got, want := stats.AvgToolCalls, 2.0/3.0; got != want { // 2 calls / 3 runs
+		t.Errorf("AvgToolCalls = %v, want %v", got, want)
 	}
 	if stats.InputTokens != 100 || stats.OutputTokens != 20 {
 		t.Errorf("InputTokens=%d OutputTokens=%d, want 100,20", stats.InputTokens, stats.OutputTokens)
 	}
-	if got := stats.SuccessRate(); got != 0.5 {
-		t.Errorf("SuccessRate() = %v, want 0.5", got)
+	if got, want := stats.SuccessRate(), 1.0/3.0; got != want {
+		t.Errorf("SuccessRate() = %v, want %v", got, want)
 	}
 	if got := stats.ToolFailureRate(); got != 0.5 {
 		t.Errorf("ToolFailureRate() = %v, want 0.5", got)
@@ -91,8 +106,8 @@ func TestStatsAggregatesAcrossRunStatesToolsAndTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats(\"\"): %v", err)
 	}
-	if all.TotalRuns != 3 {
-		t.Errorf("Stats(\"\").TotalRuns = %d, want 3 (every agent)", all.TotalRuns)
+	if all.TotalRuns != 4 {
+		t.Errorf("Stats(\"\").TotalRuns = %d, want 4 (every agent)", all.TotalRuns)
 	}
 }
 

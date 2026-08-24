@@ -40,6 +40,11 @@ type runResponse struct {
 	Error    *string           `json:"error,omitempty"`
 	Messages []message.Message `json:"messages,omitempty"`
 	Pending  []pendingCall     `json:"pending,omitempty"`
+	// Resumable is true for a non-terminal stop point a client can drive
+	// forward via POST .../resume without deciding anything first —
+	// awaiting_approval also stops the run, but needs an /approve first,
+	// so it's deliberately excluded here.
+	Resumable bool `json:"resumable,omitempty"`
 }
 
 type approveRequest struct {

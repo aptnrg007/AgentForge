@@ -142,6 +142,60 @@ func TestOpenRejectsAFutureSchemaVersion(t *testing.T) {
 	}
 }
 
+// TestOpenMigratesAPreExistingV2DatabaseWithNoDDL covers the empty
+// migration entry that bumped schemaVersion to 3 for runtime.
+// StateInterrupted: unlike every other migration here, it adds no
+// columns (runs.state is a plain TEXT column with no CHECK constraint —
+// a new state value needs no schema change at all), so its only job is
+// updating schema_version itself. A v2 database — schema.sql's current
+// CREATE TABLE shape already matches v2 exactly, since v3 adds no DDL —
+// must open cleanly and land on schema_version 3.
+func TestOpenMigratesAPreExistingV2DatabaseWithNoDDL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v2.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := db.Exec(schemaSQL); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (2)"); err != nil {
+		t.Fatalf("seed schema_version: %v", err)
+	}
+	db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open a v2 database: %v", err)
+	}
+	defer st.Close()
+
+	var version int
+	if err := st.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version after Open: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema_version = %d after Open, want %d", version, schemaVersion)
+	}
+
+	// A run with the new state must round-trip normally — nothing about
+	// v3 constrains runs.state's possible values.
+	ctx := context.Background()
+	if err := st.UpsertAgent(ctx, "a", "name: a\n"); err != nil {
+		t.Fatalf("UpsertAgent: %v", err)
+	}
+	if err := st.CreateRun(ctx, "r1", "a", "interrupted"); err != nil {
+		t.Fatalf("CreateRun with state=interrupted on a migrated database: %v", err)
+	}
+	run, err := st.GetRun(ctx, "r1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.State != "interrupted" {
+		t.Fatalf("run.State = %q, want %q", run.State, "interrupted")
+	}
+}
+
 func TestMigrationsAreOrderedAndReachSchemaVersion(t *testing.T) {
 	last := 1 // schema_version before the first registered migration
 	for _, m := range migrations {

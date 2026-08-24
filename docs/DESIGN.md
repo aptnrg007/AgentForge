@@ -37,23 +37,24 @@ references are resolved by reflecting over every string field (`internal/config/
 so a typo'd secret fails at load, matching ground rule 3.
 
 Top-level keys: `name`, `model`, `instructions`, `mcp`, `tool_definitions`, `tools`,
-`approvals`, `limits`, `session`, `output`, `tool_policy`. See `README.md`'s "Agent
-config" section for the annotated example; `internal/config/validate.go` is the
+`approvals`, `limits`, `session`, `output`, `tool_policy`, `retry`. See `README.md`'s
+"Agent config" section for the annotated example; `internal/config/validate.go` is the
 authoritative source for cross-field rules (duplicate namespaces, literal-host
 requirements on templated URLs, provider-specific `api_key` requirements, and so on).
 
 ## §5 — The run state machine
 
 `internal/runtime/runtime.go` is the core. States: `ready_for_model`,
-`awaiting_approval`, `ready_for_tools`, `completed`, `failed`, `cancelled`.
-`Engine.Step` dispatches to `stepModel`, `stepTools`, or `stepAwaitingApproval` based
-on the run's persisted state, and every path ends in exactly one write to the `runs`
-table (ground rule 1).
+`awaiting_approval`, `ready_for_tools`, `completed`, `failed`, `cancelled`,
+`interrupted` (§16). `Engine.Step` dispatches to `stepModel`, `stepTools`, or
+`stepAwaitingApproval` based on the run's persisted state, and every path ends in
+exactly one write to the `runs` table (ground rule 1).
 
 - `stepModel` calls the provider, persists the assistant turn, validates any tool
   calls it made (malformed calls trigger a bounded self-correction loop — see
   `maxRepairAttempts`), evaluates the approval policy per call, and transitions to
-  `ready_for_tools` or `awaiting_approval`.
+  `ready_for_tools` or `awaiting_approval` — or, if the provider call exhausted its
+  retry budget (§16), `interrupted` instead of `failed`.
 - `stepTools` executes every settled call (respecting `tool_policy` timeouts),
   persists results, and returns to `ready_for_model`.
 - `stepAwaitingApproval` is lazy: there is no background timer polling for an
@@ -61,9 +62,9 @@ table (ground rule 1).
   discovers the timeout and resolves it, consistent with ground rule 1 — state is
   re-evaluated from persisted data, not ticked by a goroutine.
 
-Callers loop on `Step` until it returns a terminal state or `awaiting_approval`; see
-`internal/cli/localrun.go`, `internal/api/handlers.go`, and `internal/api/stream.go`
-for the three current drive loops.
+Callers loop on `Step` until it returns a terminal state, `awaiting_approval`, or
+`interrupted`; see `internal/cli/localrun.go`, `internal/api/handlers.go`, and
+`internal/api/stream.go` for the three current drive loops.
 
 ## §8 — MCP process supervision and namespacing
 
@@ -210,3 +211,68 @@ attempt is still logged) and exempts only `/healthz`; the token comparison uses
 warning when no token is set and `--addr` isn't loopback-only
 (`isLoopbackAddr`), since that combination is the one this was actually meant to
 prevent.
+
+## §16 — Provider retry and the `interrupted` state
+
+Before this, a run's resumability (ground rule 1) covered a killed *process* but not
+a failed *provider call*: any error from `stepModel`'s call to the provider — a 429
+rate limit, a momentary 503 — landed the run in `StateFailed`, permanently, even
+though every byte needed to continue was already sitting in SQLite. `internal/provider`
+had no retry anywhere; `httputil.go`'s `decodeResponse` and each provider's `Complete`/
+`Stream` folded every non-200 straight into an untyped `fmt.Errorf`.
+
+**Typed errors.** `internal/provider/errors.go`'s `*Error` (`Provider`, `StatusCode`,
+`Message`, `RetryAfter`, `Err`) replaces those `fmt.Errorf` calls, rendering identically
+to the old strings (`runs.error` is persisted user-facing text, so this had to be a
+provable no-op on its own). `(*Error).Retryable()` treats 408/425/429/500/502/503/504/529
+and a transport failure (`StatusCode == 0`) as transient; everything else (400/401/403/
+404/413/422) as permanent — retrying a bad API key would just fail identically forever.
+`RetryAfter` comes from the `Retry-After` header (Anthropic, OpenAI) or, for Gemini
+(which sends the delay in the error body instead, as a `google.rpc.RetryInfo` detail),
+`geminiRetryDelay`.
+
+**The retry decorator.** `internal/provider/retry.go`'s `WithRetry(p Provider, pol
+RetryPolicy, logger)` wraps a `Provider`, not `Engine.stepModel` and not each provider
+individually — a decorator keeps the state machine free of HTTP semantics, and avoids
+four near-duplicate retry loops the way `decodeResponse` already avoided four duplicate
+status-check tails. Backoff is exponential with equal jitter, capped at `MaxDelay`, and
+stops **before** sleeping past `ctx`'s own deadline rather than letting `limits.timeout`
+expire mid-sleep and misreport a timeout as the cause instead of the retryable error
+that actually triggered it. `MaxAttempts <= 1` is a strict passthrough — no wrapping, no
+logging — which is what makes an agent with no `retry:` block (or `max_attempts: 1`)
+provably behave exactly as if the decorator weren't there.
+
+Retrying a model call is safe *by construction*: `stepModel`'s provider call is the only
+externally-observable action in the run loop with no side effects — tools only execute
+after a separate persisted `ready_for_tools` transition (`stepTools`) — so a duplicate
+call can never double-execute a tool, only cost extra tokens. That's also why retrying is
+on by default (`agent.go`'s `defaultRetryMaxAttempts = 3`, `defaultRetryOnNetworkErr =
+true`): unlike `tool_policy` or `output`, which each added a *new* terminal outcome a run
+could reach, retry adds none — a run that fails today still fails, just later. Streaming
+retries establishment only (the `Stream()` call itself): every provider's `Stream` checks
+`StatusCode` before ever constructing a `Stream`, so a retryable failure is always caught
+pre-first-token, never mid-stream, which is what makes retrying the call safe without
+risking a duplicate token reaching `Engine.emit`.
+
+**`StateInterrupted`.** When a call's retry budget runs out on what looked like a
+transient error, `stepModel` lands the run in `StateInterrupted` instead of
+`StateFailed` — non-terminal, resumable (`agentforge runs resume`, `POST
+/v1/runs/{id}/resume`, `Engine.Run`/`Step`), since the condition may have cleared by
+the time someone looks again. `Step`'s dispatch treats it exactly like
+`ready_for_model` (one shared `case`), which is the entire resume mechanism — there's
+no assistant message to redo, since the interrupted call never produced one. That's
+also why `stepModel` deliberately does *not* increment `run.TurnCount` for an
+interrupted call: charging a turn against `limits.max_turns` for a call that never
+reached the model would erode a resumable run's turn budget across repeated outages.
+A run stays cancellable while interrupted (`endRun`'s terminal switch deliberately
+excludes it) — an outage a user doesn't want to wait out shouldn't require
+resume-then-cancel just to stop. `Config.OnRetriesExhausted` (`retry.on_exhausted` in
+YAML) is the opt-out: `"fail"` restores the pre-retry behavior of ending the run
+outright instead.
+
+No migration was needed for the new state value — `runs.state` is a plain `TEXT`
+column with no `CHECK` constraint (`schema.sql`) — but `schemaVersion` still bumped to
+3 with an empty-`stmts` migration, purely so an older binary opening a database that
+already has `interrupted` runs in it gets `migrateSchema`'s existing "newer than this
+binary supports" error instead of hot-looping forever on a state its own `Step`/`Run`
+predate.

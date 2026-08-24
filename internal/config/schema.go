@@ -19,6 +19,7 @@ type Config struct {
 	Limits          LimitsConfig     `json:"limits,omitempty"`
 	Output          OutputConfig     `json:"output,omitempty"`
 	ToolPolicy      ToolPolicyConfig `json:"tool_policy,omitempty"`
+	Retry           RetryConfig      `json:"retry,omitempty"`
 
 	// SourceDir is the directory Load read this config's file from, used
 	// to resolve output.schema (and any future relative path) against
@@ -162,4 +163,41 @@ type ToolPolicyConfig struct {
 type ToolTimeoutOverride struct {
 	Tools   []string `json:"tools"`
 	Timeout string   `json:"timeout"`
+}
+
+// RetryConfig governs automatic retry-with-backoff of a provider (LLM)
+// call that fails with a transient error — a rate limit, a momentary
+// server or gateway error, or (with OnNetworkError) a dropped connection
+// — instead of ending the run outright. See internal/provider.WithRetry
+// and internal/agent.retryPolicy, which turns this into the engine's
+// actual policy, applying its own defaults for every field left unset
+// here. A field's zero value ("", 0, nil) always means "use the engine's
+// default", never "off" — MaxAttempts: 1 is how a config opts out of
+// retries entirely.
+type RetryConfig struct {
+	// MaxAttempts is the total number of attempts, including the first;
+	// 1 disables retries outright. 0 (the default) uses the engine's
+	// built-in default.
+	MaxAttempts int `json:"max_attempts,omitempty"`
+	// InitialDelay is the backoff before the first retry; each
+	// subsequent one roughly doubles (with jitter), up to MaxDelay.
+	InitialDelay string `json:"initial_delay,omitempty"`
+	// MaxDelay caps a single backoff sleep.
+	MaxDelay string `json:"max_delay,omitempty"`
+	// MaxElapsed caps the total time spent retrying one provider call,
+	// across every attempt. Retries are also implicitly bounded by
+	// limits.timeout, if set — whichever deadline is tighter wins, since
+	// the retry loop checks the run's own context deadline directly.
+	MaxElapsed string `json:"max_elapsed,omitempty"`
+	// OnNetworkError, if true, also retries a transport failure (a
+	// dropped connection, a DNS failure, ...) that never reached an HTTP
+	// response at all, not just an HTTP status. nil uses the engine's
+	// default.
+	OnNetworkError *bool `json:"on_network_error,omitempty"`
+	// OnExhausted is "interrupt" (default) — a run whose retry budget
+	// runs out is left in a resumable state (`agentforge runs resume`)
+	// rather than failed outright, since the underlying condition may
+	// clear on its own — or "fail", matching the behavior from before
+	// retries existed.
+	OnExhausted string `json:"on_exhausted,omitempty"`
 }

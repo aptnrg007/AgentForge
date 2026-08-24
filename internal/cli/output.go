@@ -103,6 +103,12 @@ type runResult struct {
 	// Server is set only for the remote path; it's what puts " --server
 	// <url>" on the awaiting_approval hint in text mode. Empty for local.
 	Server string
+
+	// Resumable is true only for state == "interrupted" — a stop point a
+	// caller can drive forward with `runs resume` directly, no decision
+	// needed first, unlike awaiting_approval. Mirrors the HTTP API's
+	// runResponse.Resumable (internal/api/dto.go).
+	Resumable bool
 }
 
 // emitRunResult writes res to w in the requested format. Text format is
@@ -149,6 +155,7 @@ type runEnvelope struct {
 	ToolCallsCount int                 `json:"tool_calls_count"`
 	DurationMS     int64               `json:"duration_ms"`
 	Pending        []remotePendingCall `json:"pending,omitempty"`
+	Resumable      bool                `json:"resumable,omitempty"`
 }
 
 func emitRunResultJSON(w io.Writer, res runResult) error {
@@ -159,6 +166,7 @@ func emitRunResultJSON(w io.Writer, res runResult) error {
 		ToolCallsCount: countToolUses(res.Messages),
 		DurationMS:     res.DurationMS,
 		Output:         finalOutputJSON(res),
+		Resumable:      res.Resumable,
 	}
 	if res.State == "awaiting_approval" {
 		env.Pending = res.Pending

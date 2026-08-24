@@ -128,8 +128,8 @@ func printStats(s *store.Stats, agentFilter string) {
 	if agentFilter != "" {
 		scope = "agent=" + agentFilter
 	}
-	fmt.Printf("runs (%s): %d total, %d completed, %d failed, %d cancelled, %d in flight\n",
-		scope, s.TotalRuns, s.CompletedRuns, s.FailedRuns, s.CancelledRuns, s.OtherRuns)
+	fmt.Printf("runs (%s): %d total, %d completed, %d failed, %d cancelled, %d interrupted, %d in flight\n",
+		scope, s.TotalRuns, s.CompletedRuns, s.FailedRuns, s.CancelledRuns, s.InterruptedRuns, s.OtherRuns)
 	fmt.Printf("success rate: %.1f%%\n", s.SuccessRate()*100)
 	fmt.Printf("avg turns/run: %.1f\n", s.AvgTurns)
 	fmt.Printf("tool calls: %d total (%.1f/run), %d failed, failure rate %.1f%%\n",

@@ -23,6 +23,23 @@ import (
 
 const (
 	defaultMaxTurns = 10
+
+	// Retry defaults, applied by retryPolicy to any field a config leaves
+	// unset. A provider call is the only externally-observable action in
+	// the run loop with no side effects (tools only execute after a
+	// separate persisted ready_for_tools transition), so retrying by
+	// default costs at most a duplicate model call's tokens — not a
+	// duplicate tool execution — which is what makes retrying on by
+	// default a defensible choice rather than a conservative opt-in.
+	// "No retries against a rate-limited API" was a bug in a system
+	// whose headline feature is durability, not a safe default to leave
+	// silently in place.
+	defaultRetryMaxAttempts  = 3
+	defaultRetryInitialDelay = time.Second
+	defaultRetryMaxDelay     = 30 * time.Second
+	defaultRetryMaxElapsed   = 2 * time.Minute
+	defaultRetryOnNetworkErr = true
+	defaultRetryOnExhausted  = "interrupt"
 )
 
 // ProviderFactory builds the provider a model config points at. Tests
@@ -77,6 +94,7 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 	if err != nil {
 		return nil, err
 	}
+	prov = provider.WithRetry(prov, retryPolicy(cfg.Retry), nil)
 
 	maxTurns := cfg.Limits.MaxTurns
 	if maxTurns == 0 {
@@ -109,9 +127,10 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 			Timeout:     timeout,
 			OnTimeout:   cfg.Approvals.OnTimeout,
 		},
-		Output:     outputPolicy,
-		ToolPolicy: toolPolicy(cfg.ToolPolicy),
-		RunTimeout: runTimeout,
+		Output:             outputPolicy,
+		ToolPolicy:         toolPolicy(cfg.ToolPolicy),
+		RunTimeout:         runTimeout,
+		OnRetriesExhausted: onRetriesExhausted(cfg.Retry),
 	})
 
 	tools, err := ResolveTools(ctx, registry, cfg)
@@ -200,4 +219,55 @@ func toolPolicy(cfg config.ToolPolicyConfig) runtime.ToolPolicy {
 		OnTimeout: cfg.OnTimeout,
 		Overrides: overrides,
 	}
+}
+
+// retryPolicy translates a validated config.RetryConfig into the
+// provider package's actual retry policy, same re-parse-the-validated-
+// duration pattern as toolPolicy above: by this point config.Parse has
+// already validated every duration string in cfg.Retry, so a parse
+// failure here is unreachable in practice, and treating one as "use the
+// default" is the safe fallback. A zero value in cfg (0, "", nil) always
+// means "use the engine's default" here — see RetryConfig's doc comment —
+// which is what lets an absent retry: block resolve to MaxAttempts: 1,
+// the passthrough case provider.WithRetry treats as a strict no-op.
+func retryPolicy(cfg config.RetryConfig) provider.RetryPolicy {
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultRetryMaxAttempts
+	}
+
+	initialDelay := defaultRetryInitialDelay
+	if d, err := time.ParseDuration(cfg.InitialDelay); err == nil && d > 0 {
+		initialDelay = d
+	}
+	maxDelay := defaultRetryMaxDelay
+	if d, err := time.ParseDuration(cfg.MaxDelay); err == nil && d > 0 {
+		maxDelay = d
+	}
+	maxElapsed := defaultRetryMaxElapsed
+	if d, err := time.ParseDuration(cfg.MaxElapsed); err == nil && d > 0 {
+		maxElapsed = d
+	}
+	onNetworkError := defaultRetryOnNetworkErr
+	if cfg.OnNetworkError != nil {
+		onNetworkError = *cfg.OnNetworkError
+	}
+
+	return provider.RetryPolicy{
+		MaxAttempts:    maxAttempts,
+		InitialDelay:   initialDelay,
+		MaxDelay:       maxDelay,
+		MaxElapsed:     maxElapsed,
+		OnNetworkError: onNetworkError,
+	}
+}
+
+// onRetriesExhausted resolves cfg.OnExhausted to the runtime's terminal-
+// vs-resumable choice for a run whose retry budget runs out: "interrupt"
+// (the default — see RetryConfig.OnExhausted) or "fail".
+func onRetriesExhausted(cfg config.RetryConfig) string {
+	if cfg.OnExhausted == "" {
+		return defaultRetryOnExhausted
+	}
+	return cfg.OnExhausted
 }

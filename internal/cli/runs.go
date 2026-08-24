@@ -17,7 +17,7 @@ import (
 )
 
 func newRunsCmd() *cobra.Command {
-	var server, dbPath string
+	var server, dbPath, authToken string
 	var agentFilter string
 	var limit int
 	var reason string
@@ -28,7 +28,7 @@ func newRunsCmd() *cobra.Command {
 		Short: "List runs, most recent first",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runsList(cmd.Context(), server, dbPath, agentFilter, limit)
+			return runsList(cmd.Context(), server, dbPath, authToken, agentFilter, limit)
 		},
 	}
 	list.Flags().StringVar(&agentFilter, "agent", "", "only show runs for this agent")
@@ -39,7 +39,7 @@ func newRunsCmd() *cobra.Command {
 		Short: "Show a run's full trace",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runsGet(cmd.Context(), server, dbPath, args[0])
+			return runsGet(cmd.Context(), server, dbPath, authToken, args[0])
 		},
 	}
 
@@ -51,7 +51,7 @@ func newRunsCmd() *cobra.Command {
 			if err := approveOut.validate(); err != nil {
 				return err
 			}
-			return runsDecide(cmd.Context(), server, dbPath, args[0], args[1], "approved", reason, approveOut)
+			return runsDecide(cmd.Context(), server, dbPath, authToken, args[0], args[1], "approved", reason, approveOut)
 		},
 	}
 	deny := &cobra.Command{
@@ -62,7 +62,7 @@ func newRunsCmd() *cobra.Command {
 			if err := denyOut.validate(); err != nil {
 				return err
 			}
-			return runsDecide(cmd.Context(), server, dbPath, args[0], args[1], "denied", reason, denyOut)
+			return runsDecide(cmd.Context(), server, dbPath, authToken, args[0], args[1], "denied", reason, denyOut)
 		},
 	}
 	approve.Flags().StringVar(&reason, "reason", "", "reason recorded alongside the decision")
@@ -78,7 +78,7 @@ func newRunsCmd() *cobra.Command {
 			if err := resumeOut.validate(); err != nil {
 				return err
 			}
-			return runsResume(cmd.Context(), server, dbPath, args[0], resumeOut)
+			return runsResume(cmd.Context(), server, dbPath, authToken, args[0], resumeOut)
 		},
 	}
 	addOutputFlags(resume, &resumeOut)
@@ -88,7 +88,7 @@ func newRunsCmd() *cobra.Command {
 		Short: "Stop a non-terminal run immediately",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runsCancel(cmd.Context(), server, dbPath, args[0])
+			return runsCancel(cmd.Context(), server, dbPath, authToken, args[0])
 		},
 	}
 
@@ -106,18 +106,19 @@ func newRunsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "runs", Short: "Inspect and drive runs"}
 	cmd.PersistentFlags().StringVar(&server, "server", "", "daemon URL, e.g. http://localhost:8080 (defaults to the local --db store)")
 	cmd.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (used when --server is not set)")
+	cmd.PersistentFlags().StringVar(&authToken, "auth-token", defaultAuthToken(), "bearer token for --server, if it was started with its own --auth-token (default: $AGENTFORGE_AUTH_TOKEN)")
 	cmd.AddCommand(list, get, approve, deny, resume, cancel, stats)
 	return cmd
 }
 
-func runsList(ctx context.Context, server, dbPath, agentFilter string, limit int) error {
+func runsList(ctx context.Context, server, dbPath, authToken, agentFilter string, limit int) error {
 	if server != "" {
 		url := server + "/v1/runs?limit=" + strconv.Itoa(limit)
 		if agentFilter != "" {
 			url += "&agent=" + agentFilter
 		}
 		var runs []remoteRunSummary
-		if err := apiGet(ctx, url, &runs); err != nil {
+		if err := apiGet(ctx, url, authToken, &runs); err != nil {
 			return err
 		}
 		rows := make([]runRow, len(runs))
@@ -149,10 +150,10 @@ func runsList(ctx context.Context, server, dbPath, agentFilter string, limit int
 	return nil
 }
 
-func runsGet(ctx context.Context, server, dbPath, id string) error {
+func runsGet(ctx context.Context, server, dbPath, authToken, id string) error {
 	if server != "" {
 		var trace remoteRunTrace
-		if err := apiGet(ctx, server+"/v1/runs/"+id, &trace); err != nil {
+		if err := apiGet(ctx, server+"/v1/runs/"+id, authToken, &trace); err != nil {
 			return err
 		}
 		calls := make([]toolCallRow, len(trace.ToolCalls))
@@ -203,20 +204,20 @@ func runsGet(ctx context.Context, server, dbPath, id string) error {
 // runsDecide records an approve/deny decision on one pending call, then
 // continues driving the run — the CLI path the README's approval-gate
 // story previously had no way to complete outside `agentforge chat`.
-func runsDecide(ctx context.Context, server, dbPath, runID, callID, decision, reason string, o outputOptions) error {
+func runsDecide(ctx context.Context, server, dbPath, authToken, runID, callID, decision, reason string, o outputOptions) error {
 	if server != "" {
 		reqBody, err := json.Marshal(map[string]string{"call_id": callID, "decision": decision, "reason": reason})
 		if err != nil {
 			return err
 		}
 		var result map[string]string
-		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/approve", "application/json", reqBody, &result); err != nil {
+		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/approve", "application/json", reqBody, authToken, &result); err != nil {
 			return err
 		}
 		fmt.Fprintf(progressWriter(o), "%s: %s\n", decision, callID)
 		start := time.Now()
 		var run remoteRun
-		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, &run); err != nil {
+		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, authToken, &run); err != nil {
 			return err
 		}
 		return emitRemoteRunOutcome(run, o, server, false, time.Since(start))
@@ -246,11 +247,11 @@ func runsDecide(ctx context.Context, server, dbPath, runID, callID, decision, re
 	return driveLocalRun(ctx, st, eng, run.ID, o, cfg.Output.Schema != "")
 }
 
-func runsResume(ctx context.Context, server, dbPath, runID string, o outputOptions) error {
+func runsResume(ctx context.Context, server, dbPath, authToken, runID string, o outputOptions) error {
 	if server != "" {
 		start := time.Now()
 		var run remoteRun
-		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, &run); err != nil {
+		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, authToken, &run); err != nil {
 			return err
 		}
 		return emitRemoteRunOutcome(run, o, server, false, time.Since(start))
@@ -283,10 +284,10 @@ func runsResume(ctx context.Context, server, dbPath, runID string, o outputOptio
 // YAML, a revoked API key) should still be cancellable; that's the whole
 // point of an escape hatch. Mirrors internal/api/handlers.go's
 // handleCancel, which makes the same call for the same reason.
-func runsCancel(ctx context.Context, server, dbPath, runID string) error {
+func runsCancel(ctx context.Context, server, dbPath, authToken, runID string) error {
 	if server != "" {
 		var result map[string]string
-		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/cancel", "application/json", nil, &result); err != nil {
+		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/cancel", "application/json", nil, authToken, &result); err != nil {
 			return err
 		}
 		fmt.Printf("%s: %s\n", result["state"], runID)

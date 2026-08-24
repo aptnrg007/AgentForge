@@ -281,6 +281,47 @@ waiting on the model or a tool. A run that outlives it ends `failed` with `run e
 limit` (or `cancelled`, if the same deadline fired as an external cancellation instead) — either
 way the run always lands in a terminal state, never stranded.
 
+## Provider retries
+
+A rate limit or a momentary server error is retried with backoff by default — a 429 or a
+503 no longer kills the run:
+
+```yaml
+retry:
+  max_attempts: 3          # total attempts including the first; 1 disables retries
+  initial_delay: 1s        # before the first retry; roughly doubles (with jitter) after that
+  max_delay: 30s           # cap on a single backoff sleep
+  max_elapsed: 2m          # cap on total time spent retrying one call
+  on_network_error: true   # also retry a dropped connection, not just an HTTP status
+  on_exhausted: interrupt  # interrupt (default) | fail
+```
+
+Every field defaults to the values shown above — a config with no `retry:` block at all still
+gets them; write one only to change something, same as `tool_policy`. `retry.max_attempts: 1`
+restores the exact behavior from before retries existed: fail on the first error, no backoff.
+
+What actually gets retried: 408/425/429/500/502/503/504/529, plus a transport failure
+(dropped connection, DNS failure — only with `on_network_error: true`). A 400/401/403/404
+isn't retried at all — a bad request or a bad API key will fail identically forever, so there's
+nothing to wait out. Retrying is safe by construction: the model call `retry` wraps is the only
+part of a run with no side effects — tools only run after a separate, later step — so a retried
+call can never double-execute a tool, only cost a duplicate call's worth of tokens.
+
+If the retry budget runs out on what still looks transient, the run lands in `interrupted`
+rather than `failed` — non-terminal, and resumable once the condition has cleared:
+
+```
+$ agentforge run examples/minimal.yaml -m "hi"
+run run_a1b2c3d4 was interrupted: anthropic: status 503: overloaded (resume with: agentforge runs resume run_a1b2c3d4)
+$ agentforge runs resume run_a1b2c3d4
+```
+
+`agentforge runs list`/`runs stats` show `interrupted` runs as their own count, distinct from
+both `failed` and still-in-flight; the HTTP API's `POST .../run` and `.../stream` report it as
+202 with `"resumable": true`, the same "not done yet" shape `awaiting_approval` already uses.
+Set `retry.on_exhausted: fail` to go back to ending the run outright instead, matching every
+other kind of provider failure.
+
 ## Evals
 
 The reliability machinery above — repair loops, approval gates, tool-call retries —
@@ -358,13 +399,15 @@ piped straight into `jq`; in text mode (the default) nothing changes.
 `/healthz`; with no token set, every request is unauthenticated, which is only a
 reasonable posture while `--addr` stays loopback-only (`serve` logs a warning at
 startup if it isn't). Set a token before pointing `--addr` at anything else.
+`run`/`runs`/`agents`'s own `--auth-token` (or `$AGENTFORGE_AUTH_TOKEN`) is the client
+side of the same flag, for talking to a daemon that was started with one via `--server`.
 
 ```
 POST   /v1/agents                    # create/update from a YAML body
 GET    /v1/agents                    GET /v1/agents/{name}    DELETE /v1/agents/{name}
 GET    /v1/agents/{name}/tools       # resolved, filtered, namespaced tool list
 
-POST   /v1/agents/{name}/run         # 200 with a result, or 202 with pending approvals
+POST   /v1/agents/{name}/run         # 200 with a result, or 202 (pending approvals, or interrupted+resumable)
 POST   /v1/agents/{name}/stream      # same, but Server-Sent Events: token/tool_call/tool_result as they happen
 GET    /v1/runs                      # most recent first; ?agent=name and ?limit=n
 GET    /v1/runs/{id}                 # full trace
@@ -408,7 +451,7 @@ SQLite store as the CLI (`~/.agentforge/agentforge.db` by default, override with
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`; and provider retries (`retry:`, on by default) that leave a run whose retry budget runs out `interrupted` — resumable, not failed outright — closing the gap where a transient 429/503 used to permanently kill a run despite every byte needed to continue already being in SQLite.
 
 Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
 

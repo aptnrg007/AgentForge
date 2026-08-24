@@ -53,7 +53,7 @@ type Case struct {
 // state without error.
 type Expect struct {
 	// FinalState is one of completed | failed | cancelled |
-	// awaiting_approval. Empty means "don't care".
+	// awaiting_approval | interrupted. Empty means "don't care".
 	FinalState string `json:"final_state,omitempty"`
 	// ToolCalled lists tool names (namespaced, e.g. "geo.search") that
 	// must appear at least once in the run's tool_calls.

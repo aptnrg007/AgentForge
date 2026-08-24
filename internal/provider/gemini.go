@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"agentforge/internal/message"
 )
@@ -139,8 +140,19 @@ type geminiResponse struct {
 
 type geminiErrorBody struct {
 	Error struct {
-		Message string `json:"message"`
+		Message string              `json:"message"`
+		Details []geminiErrorDetail `json:"details"`
 	} `json:"error"`
+}
+
+// geminiErrorDetail is one entry of error.details[]. Gemini doesn't send
+// a Retry-After header the way Anthropic and OpenAI do; instead, a 429's
+// retry delay travels here as a google.rpc.RetryInfo detail. Only
+// RetryDelay is read — the @type discriminator isn't checked, since a
+// detail of any other type simply has an empty retryDelay field and is
+// skipped by geminiRetryDelay below.
+type geminiErrorDetail struct {
+	RetryDelay string `json:"retryDelay"`
 }
 
 // --- translation ---
@@ -358,6 +370,28 @@ func geminiErrorMessage(body []byte) string {
 	return string(body)
 }
 
+// geminiRetryDelay extracts a 429's suggested wait from
+// error.details[].retryDelay (a duration string like "17s") — the
+// google.rpc.RetryInfo shape Gemini uses instead of a Retry-After header.
+// Passed to decodeResponse/newStatusError as the retryAfterFromBody hook
+// so a Gemini rate limit doesn't fall back to pure exponential backoff
+// the way it silently would with header-only capture.
+func geminiRetryDelay(body []byte) time.Duration {
+	var eb geminiErrorBody
+	if err := json.Unmarshal(body, &eb); err != nil {
+		return 0
+	}
+	for _, d := range eb.Error.Details {
+		if d.RetryDelay == "" {
+			continue
+		}
+		if dur, err := time.ParseDuration(d.RetryDelay); err == nil && dur > 0 {
+			return dur
+		}
+	}
+	return 0
+}
+
 func (g *Gemini) buildRequest(r Request) geminiRequest {
 	req := geminiRequest{
 		Contents: toGeminiContents(r.Messages),
@@ -396,7 +430,7 @@ func (g *Gemini) doRequest(ctx context.Context, model, method string, body gemin
 
 	resp, err := g.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("gemini: request failed: %w", err)
+		return nil, newTransportError("gemini", err)
 	}
 	return resp, nil
 }
@@ -407,7 +441,7 @@ func (g *Gemini) Complete(ctx context.Context, r Request) (*Response, error) {
 		return nil, err
 	}
 	var gr geminiResponse
-	if err := decodeResponse("gemini", resp, geminiErrorMessage, &gr); err != nil {
+	if err := decodeResponse("gemini", resp, geminiErrorMessage, geminiRetryDelay, &gr); err != nil {
 		return nil, err
 	}
 	if len(gr.Candidates) == 0 {
@@ -439,7 +473,7 @@ func (g *Gemini) Stream(ctx context.Context, r Request) (Stream, error) {
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("gemini: status %d: %s", resp.StatusCode, geminiErrorMessage(respBody))
+		return nil, newStatusError("gemini", resp, respBody, geminiErrorMessage(respBody), geminiRetryDelay)
 	}
 	return &geminiStream{body: resp.Body, reader: newSSEDataReader(resp.Body)}, nil
 }

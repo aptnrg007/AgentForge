@@ -202,7 +202,7 @@ func (o *Ollama) doRequest(ctx context.Context, body ollamaChatRequest) (*http.R
 
 	resp, err := o.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ollama: request failed: %w", err)
+		return nil, newTransportError("ollama", err)
 	}
 	return resp, nil
 }
@@ -230,7 +230,7 @@ func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
 		return nil, err
 	}
 	var chatResp ollamaChatResponse
-	if err := decodeResponse("ollama", resp, ollamaErrorMessage, &chatResp); err != nil {
+	if err := decodeResponse("ollama", resp, ollamaErrorMessage, nil, &chatResp); err != nil {
 		return nil, err
 	}
 
@@ -273,7 +273,7 @@ func (o *Ollama) Stream(ctx context.Context, r Request) (Stream, error) {
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ollama: status %d: %s", resp.StatusCode, ollamaErrorMessage(respBody))
+		return nil, newStatusError("ollama", resp, respBody, ollamaErrorMessage(respBody), nil)
 	}
 
 	// json.Decoder, not bufio.Scanner: Scanner's default line-length cap

@@ -287,7 +287,7 @@ func (a *Anthropic) doRequest(ctx context.Context, body anthropicRequest) (*http
 
 	resp, err := a.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic: request failed: %w", err)
+		return nil, newTransportError("anthropic", err)
 	}
 	return resp, nil
 }
@@ -298,7 +298,7 @@ func (a *Anthropic) Complete(ctx context.Context, r Request) (*Response, error) 
 		return nil, err
 	}
 	var ar anthropicResponse
-	if err := decodeResponse("anthropic", resp, anthropicErrorMessage, &ar); err != nil {
+	if err := decodeResponse("anthropic", resp, anthropicErrorMessage, nil, &ar); err != nil {
 		return nil, err
 	}
 
@@ -320,7 +320,7 @@ func (a *Anthropic) Stream(ctx context.Context, r Request) (Stream, error) {
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic: status %d: %s", resp.StatusCode, anthropicErrorMessage(respBody))
+		return nil, newStatusError("anthropic", resp, respBody, anthropicErrorMessage(respBody), nil)
 	}
 	return &anthropicStream{body: resp.Body, reader: newAnthropicSSEReader(resp.Body)}, nil
 }

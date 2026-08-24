@@ -19,10 +19,11 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		dbPath string
-		msg    string
-		server string
-		out    outputOptions
+		dbPath    string
+		msg       string
+		server    string
+		authToken string
+		out       outputOptions
 	)
 
 	cmd := &cobra.Command{
@@ -41,7 +42,7 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 			if server != "" {
-				return runRemote(cmd.Context(), server, args[0], resolvedMsg, out)
+				return runRemote(cmd.Context(), server, authToken, args[0], resolvedMsg, out)
 			}
 			return runLocal(cmd.Context(), dbPath, args[0], resolvedMsg, out)
 		},
@@ -50,6 +51,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (embedded mode only)")
 	cmd.Flags().StringVarP(&msg, "message", "m", "", `message to send the agent; "@path" reads it from a file`)
 	cmd.Flags().StringVar(&server, "server", "", "daemon URL to run against instead of an embedded engine, e.g. http://localhost:8080")
+	cmd.Flags().StringVar(&authToken, "auth-token", defaultAuthToken(), "bearer token for --server, if it was started with its own --auth-token (default: $AGENTFORGE_AUTH_TOKEN)")
 	addOutputFlags(cmd, &out)
 	return cmd
 }
@@ -98,14 +100,14 @@ func runLocal(ctx context.Context, dbPath, cfgPath, msg string, o outputOptions)
 }
 
 // runRemote registers the agent with a running daemon and runs it there.
-func runRemote(ctx context.Context, server, cfgPath, msg string, o outputOptions) error {
+func runRemote(ctx context.Context, server, authToken, cfgPath, msg string, o outputOptions) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return err
 	}
 
 	var ag remoteAgent
-	if err := apiPost(ctx, server+"/v1/agents", "text/yaml", raw, &ag); err != nil {
+	if err := apiPost(ctx, server+"/v1/agents", "text/yaml", raw, authToken, &ag); err != nil {
 		return fmt.Errorf("register agent: %w", err)
 	}
 
@@ -115,7 +117,7 @@ func runRemote(ctx context.Context, server, cfgPath, msg string, o outputOptions
 	}
 	start := time.Now()
 	var run remoteRun
-	if err := apiPost(ctx, server+"/v1/agents/"+ag.Name+"/run", "application/json", reqBody, &run); err != nil {
+	if err := apiPost(ctx, server+"/v1/agents/"+ag.Name+"/run", "application/json", reqBody, authToken, &run); err != nil {
 		return fmt.Errorf("run agent: %w", err)
 	}
 
@@ -149,6 +151,7 @@ func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaS
 	res := runResult{
 		RunID: run.RunID, State: run.State, Error: run.Error, Messages: run.Messages,
 		Pending: run.Pending, DurationMS: elapsed.Milliseconds(), SchemaSet: schemaSet, Server: server,
+		Resumable: run.Resumable,
 	}
 	w, closeW, err := outputTarget(o)
 	if err != nil {
@@ -163,12 +166,19 @@ func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaS
 		return err
 	}
 
-	if run.State == "failed" {
+	switch run.State {
+	case "failed":
 		errStr := "unknown error"
 		if run.Error != nil {
 			errStr = *run.Error
 		}
 		err = fmt.Errorf("run %s failed: %s", run.RunID, errStr)
+	case "interrupted":
+		errStr := "unknown error"
+		if run.Error != nil {
+			errStr = *run.Error
+		}
+		err = fmt.Errorf("run %s was interrupted: %s (resume with: agentforge runs resume %s --server %s)", run.RunID, errStr, run.RunID, server)
 	}
 	return err
 }

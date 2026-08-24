@@ -302,7 +302,8 @@ func (s *Server) buildRunResponse(ctx context.Context, runID string, state runti
 	resp := runResponse{RunID: runID, State: string(state), Error: run.Error, Messages: msgs}
 	status := http.StatusOK
 
-	if state == runtime.StateAwaitingApproval {
+	switch state {
+	case runtime.StateAwaitingApproval:
 		status = http.StatusAccepted
 		pending, err := s.store.ListPendingApprovals(ctx, runID)
 		if err != nil {
@@ -312,6 +313,14 @@ func (s *Server) buildRunResponse(ctx context.Context, runID string, state runti
 		for i, tc := range pending {
 			resp.Pending[i] = pendingCall{CallID: tc.ID, Tool: tc.ToolName, Args: json.RawMessage(tc.ArgsJSON)}
 		}
+	case runtime.StateInterrupted:
+		// 202, same as awaiting_approval: the run isn't done, but the
+		// daemon itself is fine — a 5xx would misreport who's actually
+		// broken. Unlike awaiting_approval there's nothing to decide
+		// first, so Resumable tells a client it can call .../resume
+		// directly.
+		status = http.StatusAccepted
+		resp.Resumable = true
 	}
 
 	return resp, status, nil

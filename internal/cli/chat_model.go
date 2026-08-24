@@ -45,6 +45,13 @@ type chatModel struct {
 
 	runID  string
 	hasRun bool
+	// lastState is the run's state as of the most recent stop point
+	// (StateCompleted/StateFailed/StateInterrupted/StateAwaitingApproval —
+	// see handleStep). Unlike those, updateInput needs to know it too: a
+	// StateInterrupted run resumes by stepping again with no new user
+	// message, unlike a terminal run's next Enter, which starts a new
+	// turn via ContinueRun.
+	lastState runtime.State
 
 	transcript    []string
 	shownMsgCount int
@@ -109,6 +116,18 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m chatModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyEnter {
+		// An interrupted run resumes on the next Enter regardless of what
+		// (if anything) is typed — retrying the same pending model call,
+		// not starting a new turn, so ContinueRun (which requires a
+		// terminal run) never enters into it. Any typed text is left in
+		// the input box rather than discarded, in case it was meant for
+		// after the retry.
+		if m.hasRun && m.lastState == runtime.StateInterrupted {
+			m.transcript = append(m.transcript, "retrying...")
+			m.mode = modeStepping
+			return m, m.stepCmd()
+		}
+
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
 			return m, nil
@@ -164,13 +183,30 @@ func (m chatModel) handleStep(msg stepMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.state {
 	case runtime.StateAwaitingApproval:
+		m.lastState = msg.state
 		return m, m.loadPendingCmd()
-	case runtime.StateCompleted, runtime.StateFailed:
+	case runtime.StateCompleted, runtime.StateFailed, runtime.StateInterrupted:
+		m.lastState = msg.state
 		m.appendNewMessages()
 		if msg.state == runtime.StateFailed {
 			run, err := m.st.GetRun(m.ctx, m.runID)
 			if err == nil && run.Error != nil {
 				m.transcript = append(m.transcript, "run failed: "+*run.Error)
+			}
+		}
+		if msg.state == runtime.StateInterrupted {
+			// Unlike StateFailed, this isn't terminal — it stopped here
+			// (rather than auto-retrying via the default case below) so an
+			// interactive session doesn't silently hammer a rate-limited
+			// API in the background. updateInput checks m.lastState and
+			// resumes with a plain stepCmd on the next Enter, not
+			// ContinueRun — ContinueRun rejects a non-terminal run outright
+			// (see its own doc comment), and there's no new user turn to
+			// add here anyway: the interrupted call was a retry of the
+			// existing pending one.
+			run, err := m.st.GetRun(m.ctx, m.runID)
+			if err == nil && run.Error != nil {
+				m.transcript = append(m.transcript, "run interrupted: "+*run.Error+" (press enter to retry)")
 			}
 		}
 		m.mode = modeInput

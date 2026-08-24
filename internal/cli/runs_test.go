@@ -37,7 +37,7 @@ func TestRunsCancelStopsNonTerminalRun(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	if err := runsCancel(ctx, "", dbPath, "run-1"); err != nil {
+	if err := runsCancel(ctx, "", dbPath, "", "run-1"); err != nil {
 		t.Fatalf("runsCancel: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestRunsCancelAlreadyTerminalReturnsError(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	if err := runsCancel(ctx, "", dbPath, "run-done"); err == nil {
+	if err := runsCancel(ctx, "", dbPath, "", "run-done"); err == nil {
 		t.Fatal("expected an error cancelling an already-completed run")
 	}
 }

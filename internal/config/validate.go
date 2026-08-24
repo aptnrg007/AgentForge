@@ -77,6 +77,9 @@ func (c *Config) validate() error {
 	if err := c.ToolPolicy.validate(); err != nil {
 		return fmt.Errorf("tool_policy: %w", err)
 	}
+	if err := c.Retry.validate(); err != nil {
+		return fmt.Errorf("retry: %w", err)
+	}
 	return nil
 }
 
@@ -352,6 +355,46 @@ func (p ToolPolicyConfig) validate() error {
 		if err := validatePositiveDuration(o.Timeout); err != nil {
 			return fmt.Errorf("overrides[%d].timeout: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// validate checks r in isolation. Deliberately not an error: MaxElapsed
+// left unconstrained relative to limits.timeout — the retry loop reads
+// the run's own context deadline directly (see internal/provider/retry.go),
+// so the two can never actually conflict at runtime, and for a run
+// resumed later the relationship between them is legitimately different
+// anyway.
+func (r RetryConfig) validate() error {
+	if r.MaxAttempts < 0 || r.MaxAttempts > 20 {
+		return fmt.Errorf("max_attempts: must be between 0 and 20, got %d", r.MaxAttempts)
+	}
+	if r.InitialDelay != "" {
+		if err := validatePositiveDuration(r.InitialDelay); err != nil {
+			return fmt.Errorf("initial_delay: %w", err)
+		}
+	}
+	if r.MaxDelay != "" {
+		if err := validatePositiveDuration(r.MaxDelay); err != nil {
+			return fmt.Errorf("max_delay: %w", err)
+		}
+	}
+	if r.MaxElapsed != "" {
+		if err := validatePositiveDuration(r.MaxElapsed); err != nil {
+			return fmt.Errorf("max_elapsed: %w", err)
+		}
+	}
+	if r.InitialDelay != "" && r.MaxDelay != "" {
+		initial, _ := time.ParseDuration(r.InitialDelay)
+		max, _ := time.ParseDuration(r.MaxDelay)
+		if initial > max {
+			return fmt.Errorf("initial_delay (%s) must be <= max_delay (%s)", r.InitialDelay, r.MaxDelay)
+		}
+	}
+	switch r.OnExhausted {
+	case "", "interrupt", "fail":
+	default:
+		return fmt.Errorf("on_exhausted: unknown value %q", r.OnExhausted)
 	}
 	return nil
 }

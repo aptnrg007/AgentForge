@@ -68,6 +68,34 @@ func fakeProviderFactory(responses ...*provider.Response) agent.ProviderFactory 
 	}
 }
 
+// alwaysErrorProvider fails every Complete/Stream call with a scripted
+// error, for a test that wants to exhaust a retry: budget rather than
+// exercise a real success path.
+type alwaysErrorProvider struct {
+	err   error
+	calls int
+}
+
+func (p *alwaysErrorProvider) Name() string { return "always-error" }
+
+func (p *alwaysErrorProvider) Complete(ctx context.Context, r provider.Request) (*provider.Response, error) {
+	p.calls++
+	return nil, p.err
+}
+
+func (p *alwaysErrorProvider) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	_, err := p.Complete(ctx, r)
+	return nil, err
+}
+
+func (p *alwaysErrorProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
+func alwaysErrorProviderFactory(err error) agent.ProviderFactory {
+	return func(model config.ModelConfig) (provider.Provider, error) {
+		return &alwaysErrorProvider{err: err}, nil
+	}
+}
+
 func textResponse(text string) *provider.Response {
 	return &provider.Response{
 		Content:    []message.ContentBlock{{Type: message.BlockText, Text: text}},
@@ -448,6 +476,67 @@ func TestRunPausesForApprovalThenApproveAndResume(t *testing.T) {
 	}
 	if gotResult != "Echo: gated" {
 		t.Fatalf("expected the approved call's real MCP result, got %q", gotResult)
+	}
+}
+
+const retryDemoYAML = `
+name: retry-demo
+model:
+  provider: ollama
+  name: test-model
+instructions: you are a test assistant
+limits:
+  max_turns: 10
+retry:
+  max_attempts: 2
+  initial_delay: 1ms
+  max_delay: 2ms
+`
+
+// TestRunInterruptedReturns202WithResumable proves a run whose retry
+// budget runs out surfaces as 202 (not a 5xx — the daemon itself is
+// fine) with state "interrupted" and resumable: true, the same "not
+// done, come back" shape awaiting_approval already uses, and that the
+// SSE /stream endpoint's terminal "done" frame carries the same state
+// instead of the loop spinning on it.
+func TestRunInterruptedReturns202WithResumable(t *testing.T) {
+	retryable := &provider.Error{Provider: "x", StatusCode: 503, Message: "unavailable"}
+	ts := newTestServer(t, alwaysErrorProviderFactory(retryable))
+	postAgent(t, ts, retryDemoYAML)
+
+	resp, err := http.Post(ts.URL+"/v1/agents/retry-demo/run", "application/json", strings.NewReader(`{"message":"hi"}`))
+	if err != nil {
+		t.Fatalf("POST run: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST run: status %d, want 202: %s", resp.StatusCode, body)
+	}
+
+	var runOut runResponse
+	if err := json.Unmarshal(body, &runOut); err != nil {
+		t.Fatalf("decode run response: %v (body=%s)", err, body)
+	}
+	if runOut.State != "interrupted" {
+		t.Fatalf("state = %q, want interrupted (body=%s)", runOut.State, body)
+	}
+	if !runOut.Resumable {
+		t.Fatalf("Resumable = false, want true for an interrupted run (body=%s)", body)
+	}
+
+	// The SSE stream must stop on the same state, not spin.
+	sResp, err := http.Post(ts.URL+"/v1/agents/retry-demo/stream", "application/json", strings.NewReader(`{"message":"hi again"}`))
+	if err != nil {
+		t.Fatalf("POST stream: %v", err)
+	}
+	defer sResp.Body.Close()
+	sBody, err := io.ReadAll(sResp.Body)
+	if err != nil {
+		t.Fatalf("read SSE body: %v", err)
+	}
+	if !strings.Contains(string(sBody), `"state":"interrupted"`) {
+		t.Fatalf("expected the SSE stream's done frame to carry state=interrupted, got: %s", sBody)
 	}
 }
 
