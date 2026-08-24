@@ -92,10 +92,21 @@ func newRunsCmd() *cobra.Command {
 		},
 	}
 
+	var statsAgent string
+	stats := &cobra.Command{
+		Use:   "stats",
+		Short: "Aggregate success rate, turns, tool calls, and token spend across runs",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runsStats(cmd.Context(), server, dbPath, statsAgent)
+		},
+	}
+	stats.Flags().StringVar(&statsAgent, "agent", "", "only aggregate runs for this agent")
+
 	cmd := &cobra.Command{Use: "runs", Short: "Inspect and drive runs"}
 	cmd.PersistentFlags().StringVar(&server, "server", "", "daemon URL, e.g. http://localhost:8080 (defaults to the local --db store)")
 	cmd.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (used when --server is not set)")
-	cmd.AddCommand(list, get, approve, deny, resume, cancel)
+	cmd.AddCommand(list, get, approve, deny, resume, cancel, stats)
 	return cmd
 }
 
@@ -146,9 +157,13 @@ func runsGet(ctx context.Context, server, dbPath, id string) error {
 		}
 		calls := make([]toolCallRow, len(trace.ToolCalls))
 		for i, tc := range trace.ToolCalls {
-			calls[i] = toolCallRow{ID: tc.ID, ToolName: tc.ToolName, Approval: tc.Approval, DecidedBy: tc.DecidedBy, Reason: tc.Reason, Result: tc.Result, IsError: tc.IsError}
+			calls[i] = toolCallRow{ID: tc.ID, ToolName: tc.ToolName, Approval: tc.Approval, DecidedBy: tc.DecidedBy, Reason: tc.Reason, Result: tc.Result, IsError: tc.IsError, DurationMS: tc.DurationMS}
 		}
-		printRunTrace(trace.RunID, trace.State, trace.TurnCount, trace.Error, trace.Messages, calls)
+		msgs := make([]messageRow, len(trace.Messages))
+		for i, m := range trace.Messages {
+			msgs[i] = messageRow(m)
+		}
+		printRunTrace(trace.RunID, trace.State, trace.TurnCount, trace.Error, msgs, calls)
 		return nil
 	}
 
@@ -165,7 +180,7 @@ func runsGet(ctx context.Context, server, dbPath, id string) error {
 	if err != nil {
 		return err
 	}
-	msgs, err := st.ListMessages(ctx, id)
+	details, err := st.ListMessagesDetailed(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -175,7 +190,11 @@ func runsGet(ctx context.Context, server, dbPath, id string) error {
 	}
 	calls := make([]toolCallRow, len(toolCalls))
 	for i, tc := range toolCalls {
-		calls[i] = toolCallRow{ID: tc.ID, ToolName: tc.ToolName, Approval: tc.Approval, DecidedBy: tc.DecidedBy, Reason: tc.Reason, Result: tc.Result, IsError: tc.IsError}
+		calls[i] = toolCallRow{ID: tc.ID, ToolName: tc.ToolName, Approval: tc.Approval, DecidedBy: tc.DecidedBy, Reason: tc.Reason, Result: tc.Result, IsError: tc.IsError, DurationMS: tc.DurationMS}
+	}
+	msgs := make([]messageRow, len(details))
+	for i, d := range details {
+		msgs[i] = messageRow{Role: d.Role, Content: d.Content, InputTokens: d.InputTokens, OutputTokens: d.OutputTokens, LatencyMS: d.LatencyMS}
 	}
 	printRunTrace(run.ID, run.State, run.TurnCount, run.Error, msgs, calls)
 	return nil
@@ -289,5 +308,31 @@ func runsCancel(ctx context.Context, server, dbPath, runID string) error {
 		return err
 	}
 	fmt.Printf("%s: %s\n", state, runID)
+	return nil
+}
+
+// runsStats aggregates local run history — the daemon has no equivalent
+// endpoint yet, so --server is rejected explicitly rather than silently
+// ignored (which would otherwise look like it aggregated the daemon's
+// runs when it actually read the local --db file instead).
+func runsStats(ctx context.Context, server, dbPath, agentFilter string) error {
+	if server != "" {
+		return fmt.Errorf("runs stats does not support --server yet; run it against the daemon's --db file directly")
+	}
+
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	stats, err := st.Stats(ctx, agentFilter)
+	if err != nil {
+		return err
+	}
+	printStats(stats, agentFilter)
 	return nil
 }

@@ -49,23 +49,35 @@ type remoteRunSummary struct {
 }
 
 type remoteToolCall struct {
-	ID        string          `json:"id"`
-	ToolName  string          `json:"tool_name"`
-	Args      json.RawMessage `json:"args"`
-	Approval  string          `json:"approval"`
-	DecidedBy *string         `json:"decided_by,omitempty"`
-	Reason    *string         `json:"reason,omitempty"`
-	Result    *string         `json:"result,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	ID         string          `json:"id"`
+	ToolName   string          `json:"tool_name"`
+	Args       json.RawMessage `json:"args"`
+	Approval   string          `json:"approval"`
+	DecidedBy  *string         `json:"decided_by,omitempty"`
+	Reason     *string         `json:"reason,omitempty"`
+	Result     *string         `json:"result,omitempty"`
+	IsError    bool            `json:"is_error,omitempty"`
+	DurationMS int64           `json:"duration_ms,omitempty"`
+}
+
+// remoteMessage mirrors api's messageDTO: a message plus the token/
+// latency cost of the model call that produced it (0 for every role but
+// assistant).
+type remoteMessage struct {
+	Role         message.Role           `json:"role"`
+	Content      []message.ContentBlock `json:"content"`
+	InputTokens  int                    `json:"input_tokens,omitempty"`
+	OutputTokens int                    `json:"output_tokens,omitempty"`
+	LatencyMS    int64                  `json:"latency_ms,omitempty"`
 }
 
 type remoteRunTrace struct {
-	RunID     string            `json:"run_id"`
-	State     string            `json:"state"`
-	TurnCount int               `json:"turn_count"`
-	Error     *string           `json:"error,omitempty"`
-	Messages  []message.Message `json:"messages"`
-	ToolCalls []remoteToolCall  `json:"tool_calls"`
+	RunID     string           `json:"run_id"`
+	State     string           `json:"state"`
+	TurnCount int              `json:"turn_count"`
+	Error     *string          `json:"error,omitempty"`
+	Messages  []remoteMessage  `json:"messages"`
+	ToolCalls []remoteToolCall `json:"tool_calls"`
 }
 
 type apiErrorBody struct {

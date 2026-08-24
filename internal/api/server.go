@@ -50,7 +50,48 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleResume)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.handleCancel)
-	return mux
+	return s.logRequests(mux)
+}
+
+// logRequests wraps h with one Info line per request — method, path,
+// status, and how long it took — the request-level counterpart to
+// internal/runtime's per-run state-transition logging. Every handler
+// already has ctx for a request-scoped logger if one's ever needed; this
+// stays a flat wrapper since nothing here currently correlates multiple
+// log lines to one request the way run_id does for a run.
+func (s *Server) logRequests(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(sw, r)
+		s.logger.Info("api: request", "method", r.Method, "path", r.URL.Path,
+			"status", sw.status, "duration_ms", time.Since(start).Milliseconds())
+	})
+}
+
+// statusWriter captures the status code a handler wrote, since
+// http.ResponseWriter itself doesn't expose it after the fact — WriteHeader
+// is never called at all for a handler that only calls Write (net/http
+// implicitly sends 200 in that case), so status starts at 200 accordingly.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sw *statusWriter) WriteHeader(status int) {
+	sw.status = status
+	sw.ResponseWriter.WriteHeader(status)
+}
+
+// Flush satisfies http.Flusher by delegating to the wrapped
+// ResponseWriter — required so logRequests' wrapping doesn't break
+// newSSEWriter's `w.(http.Flusher)` type assertion for handleStreamAgent,
+// which would otherwise see a statusWriter with no Flush method and
+// reject every streaming request outright.
+func (sw *statusWriter) Flush() {
+	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // Serve runs the HTTP daemon until ctx is cancelled, then shuts it down

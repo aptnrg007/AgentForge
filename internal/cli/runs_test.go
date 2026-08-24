@@ -81,3 +81,45 @@ func TestRunsCancelAlreadyTerminalReturnsError(t *testing.T) {
 		t.Fatal("expected an error cancelling an already-completed run")
 	}
 }
+
+// TestRunsStatsAggregatesLocalRuns exercises runsStats' local-store path
+// directly, the same way TestRunsCancelStopsNonTerminalRun does for
+// runsCancel.
+func TestRunsStatsAggregatesLocalRuns(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.UpsertAgent(ctx, "test-agent", localRunTestYAML); err != nil {
+		t.Fatalf("UpsertAgent: %v", err)
+	}
+	if err := st.CreateRun(ctx, "run-1", "test-agent", string(runtime.StateReadyForModel)); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := st.UpdateRun(ctx, "run-1", string(runtime.StateCompleted), 3, 0, nil); err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if err := runsStats(ctx, "", dbPath, ""); err != nil {
+		t.Fatalf("runsStats: %v", err)
+	}
+	if err := runsStats(ctx, "", dbPath, "test-agent"); err != nil {
+		t.Fatalf("runsStats with --agent: %v", err)
+	}
+}
+
+// TestRunsStatsRejectsServer confirms --server is refused explicitly
+// rather than silently aggregating the local --db file instead of the
+// daemon's runs, which would otherwise look like it worked.
+func TestRunsStatsRejectsServer(t *testing.T) {
+	err := runsStats(context.Background(), "http://localhost:8080", "unused.db", "")
+	if err == nil {
+		t.Fatal("expected runsStats to reject --server")
+	}
+}

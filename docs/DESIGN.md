@@ -131,3 +131,35 @@ model leg is scripted, so `examples/evals/weather.yaml` still exercises the actu
 Open-Meteo HTTP calls its agent makes. That's a real, deliberate CI dependency on
 outbound network to a free, keyless API, not an accident — see the "Eval (replay)"
 step in `.github/workflows/ci.yml`.
+
+## §13 — Observability
+
+`internal/store/migrate.go` is the schema migration runner: `schema.sql` always
+describes the *current* schema, and `CREATE TABLE IF NOT EXISTS` only helps a
+brand-new database reach it — an existing one needs `ALTER TABLE`, which
+`migrateSchema` applies in order from whatever `schema_version` it's on up to the
+binary's `schemaVersion`, opening the database file directly rather than requiring
+a separate migration command. `provider.Usage` (input/output tokens) and per-call
+latency, both collected by every provider already, are persisted alongside the
+assistant message that produced them (`messages.input_tokens/output_tokens/
+latency_ms`, via `Store.AppendMessageWithUsage` — every other role's message stays
+at 0) rather than discarded once `stepModel` reads them; `tool_calls.duration_ms`
+does the same for how long a tool call took to execute. `Store.Stats` aggregates
+both across a run's history into what `agentforge runs stats` reports: success
+rate, average turns and tool calls per run, tool failure rate, and token spend —
+a query layer over data every run already persists, not new tracking. `runs get`
+and the HTTP API's run trace (`GET /v1/runs/{id}`) surface the same per-message/
+per-call numbers via `Store.ListMessagesDetailed`.
+
+`internal/runtime` previously had no log line anywhere in the run loop. `Engine`
+now takes an optional `Config.Logger` (nil defaults to `slog.Default()`, matching
+`mcp.NewRegistry`/`api.NewServer`'s existing convention) and logs a run's start and
+every state transition — `Step`'s own dispatch, not each of `stepModel`/
+`stepTools`/`stepAwaitingApproval` individually, since Step is the one place every
+transition already passes through regardless of which of the three actually ran —
+with a `run_id` field so a multi-run process's log can be filtered to one run.
+`internal/api`'s `Handler()` wraps its mux in a logging middleware
+(`logRequests`) that logs method, path, status, and duration for every request,
+including streaming ones — `statusWriter` forwards `Flush()` to the underlying
+`http.ResponseWriter` specifically so wrapping it doesn't break `handleStreamAgent`'s
+SSE responses, which type-assert the writer they're given to `http.Flusher`.

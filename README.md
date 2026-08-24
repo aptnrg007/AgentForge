@@ -21,7 +21,7 @@ No signup, no API key, nothing to configure — the config file *is* the agent.
 Every run is a persisted state machine, not a `for` loop: state, messages, and every tool call live in SQLite from the first line of code. That's what makes the rest of this possible without a rewrite —
 
 - **Resumable.** Kill the process mid-run and it picks back up exactly where it left off.
-- **Inspectable.** `agentforge runs get <id>` shows the full trace: every message, every tool call, who approved it, what came back.
+- **Inspectable.** `agentforge runs get <id>` shows the full trace: every message (with its token cost and latency), every tool call (with how long it took), who approved it, what came back. `agentforge runs stats` aggregates that across every run: success rate, avg turns, tool-failure rate, token spend.
 - **Gated.** Put a tool behind `approvals.require` and the run pauses until a human says yes — denial doesn't kill the run, it feeds an error back to the model so it can try something else.
 
 ```
@@ -329,6 +329,7 @@ agentforge runs get <id> [--server URL]                            # full trace:
 agentforge runs approve|deny <id> <call-id> [--reason TEXT]        # decide a pending call and continue the run
 agentforge runs resume <id> [--server URL]                         # continue a run whose calls are already decided
 agentforge runs cancel <id> [--server URL]                         # stop a non-terminal run immediately
+agentforge runs stats [--agent NAME]                                # success rate, avg turns/tool calls, token spend (local --db only)
 agentforge eval <suite.yaml | dir> [--live [--model P]... [--record]]  # run a scripted eval suite; see "Evals" below
 ```
 

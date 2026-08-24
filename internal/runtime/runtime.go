@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"sort"
 	"strings"
@@ -236,6 +237,13 @@ type Config struct {
 	// pre-existing behavior; agent.Build sets this from limits.timeout.
 	// See Step for where the deadline is actually derived and applied.
 	RunTimeout time.Duration
+	// Logger receives one line per run-started and per state transition,
+	// with a run_id field so a multi-run process's log can be filtered
+	// down to one run. nil means slog.Default() — matching mcp.NewRegistry
+	// and api.NewServer's same convention, so a caller that already passes
+	// a logger to those (every current one does) needs nothing extra here
+	// unless it wants a different logger specifically for the run loop.
+	Logger *slog.Logger
 }
 
 type Engine struct {
@@ -244,6 +252,7 @@ type Engine struct {
 	tools    map[string]Tool
 	cfg      Config
 	onEvent  func(Event)
+	logger   *slog.Logger
 }
 
 func NewEngine(st *store.Store, p provider.Provider, cfg Config) *Engine {
@@ -256,7 +265,11 @@ func NewEngine(st *store.Store, p provider.Provider, cfg Config) *Engine {
 		// turn 3").
 		cfg.Output.MaxRetries = maxRepairAttempts
 	}
-	return &Engine{store: st, provider: p, tools: map[string]Tool{}, cfg: cfg}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Engine{store: st, provider: p, tools: map[string]Tool{}, cfg: cfg, logger: logger}
 }
 
 func (e *Engine) RegisterTool(t Tool) {
@@ -316,6 +329,7 @@ func (e *Engine) NewRun(ctx context.Context, runID, userMessage string) error {
 	if _, err := e.store.AppendMessage(ctx, runID, message.Text(message.RoleUser, userMessage)); err != nil {
 		return err
 	}
+	e.logger.Info("runtime: run started", "run_id", runID, "agent", e.cfg.AgentName)
 	return nil
 }
 
@@ -370,6 +384,12 @@ func (e *Engine) Step(ctx context.Context, runID string) (State, error) {
 	default:
 		// completed, failed, cancelled: nothing to do.
 		return State(run.State), nil
+	}
+
+	if err == nil {
+		e.logger.Info("runtime: state transition", "run_id", runID, "from", run.State, "to", state)
+	} else {
+		e.logger.Warn("runtime: step failed", "run_id", runID, "from", run.State, "error", err)
 	}
 
 	if err != nil && ctx.Err() != nil {
@@ -481,6 +501,7 @@ func (e *Engine) endRun(ctx context.Context, runID string, state State, reason s
 	if err := e.store.UpdateRun(ctx, runID, string(state), run.TurnCount, run.RepairCount, &reason); err != nil {
 		return "", err
 	}
+	e.logger.Info("runtime: run ended", "run_id", runID, "from", run.State, "to", state, "reason", reason)
 	return state, nil
 }
 
@@ -599,6 +620,7 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		return "", err
 	}
 
+	callStart := time.Now()
 	resp, err := e.complete(ctx, provider.Request{
 		Model:          e.cfg.Model,
 		System:         e.cfg.System,
@@ -608,6 +630,7 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		Temperature:    e.cfg.Temperature,
 		ResponseSchema: e.responseSchemaForRequest(),
 	})
+	latencyMS := time.Since(callStart).Milliseconds()
 	turnCount := run.TurnCount + 1
 	if err != nil {
 		// ctx.Err() (the ORIGINAL ctx, not err itself, which may just be a
@@ -633,7 +656,8 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		return state, nil
 	}
 
-	if _, err := e.store.AppendMessage(ctx, run.ID, message.Message{Role: message.RoleAssistant, Content: resp.Content}); err != nil {
+	assistantMsg := message.Message{Role: message.RoleAssistant, Content: resp.Content}
+	if _, err := e.store.AppendMessageWithUsage(ctx, run.ID, assistantMsg, resp.Usage.InputTokens, resp.Usage.OutputTokens, latencyMS); err != nil {
 		return "", err
 	}
 
@@ -840,6 +864,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 	for _, tc := range unexecuted {
 		var resultText string
 		var isError bool
+		var durationMS int64
 		var richParts []message.ContentBlock
 
 		switch tc.Approval {
@@ -857,6 +882,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 					callCtx, cancel = context.WithTimeout(ctx, d)
 				}
 
+				start := time.Now()
 				var out string
 				var err error
 				if tool.ExecuteRich != nil {
@@ -865,6 +891,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 					out, err = tool.Execute(callCtx, json.RawMessage(tc.ArgsJSON))
 				}
 				cancel()
+				durationMS = time.Since(start).Milliseconds()
 
 				switch {
 				case err != nil && ctx.Err() != nil:
@@ -882,7 +909,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 					// get another turn anyway.
 					resultText, isError = err.Error(), true
 					pctx, cancel := terminalCtx(ctx)
-					uerr := e.store.UpdateToolCallResult(pctx, tc.ID, resultText, isError)
+					uerr := e.store.UpdateToolCallResult(pctx, tc.ID, resultText, isError, durationMS)
 					cancel()
 					if uerr != nil {
 						return "", uerr
@@ -912,7 +939,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 						// now, these are exactly the writes that must not
 						// be lost.
 						pctx, cancel := terminalCtx(ctx)
-						uerr := e.store.UpdateToolCallResult(pctx, tc.ID, timeoutMsg, true)
+						uerr := e.store.UpdateToolCallResult(pctx, tc.ID, timeoutMsg, true, durationMS)
 						cancel()
 						if uerr != nil {
 							return "", uerr
@@ -945,7 +972,7 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 		// tool_calls row is left with no result at all instead of showing
 		// what actually happened.
 		pctx, cancel := terminalCtx(ctx)
-		err := e.store.UpdateToolCallResult(pctx, tc.ID, resultText, isError)
+		err := e.store.UpdateToolCallResult(pctx, tc.ID, resultText, isError, durationMS)
 		cancel()
 		if err != nil {
 			return "", err

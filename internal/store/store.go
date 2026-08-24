@@ -19,8 +19,6 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 1
-
 // ErrNotFound is returned by lookups (GetAgent, GetRun) when no row
 // matches, so callers can distinguish "not found" from other failures
 // (e.g. to map it to an HTTP 404).
@@ -66,16 +64,9 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: apply schema: %w", err)
 	}
 
-	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
+	if err := migrateSchema(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("store: read schema_version: %w", err)
-	}
-	if count == 0 {
-		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("store: seed schema_version: %w", err)
-		}
+		return nil, err
 	}
 
 	return &Store{db: db}, nil
@@ -261,7 +252,20 @@ func (s *Store) UpdateRun(ctx context.Context, id, state string, turnCount, repa
 
 // --- messages ---
 
+// AppendMessage stores msg with no usage/latency recorded — the shape
+// every caller except stepModel's assistant-message append wants (a user
+// message, a tool-result message, and repair feedback have no meaningful
+// token cost of their own). See AppendMessageWithUsage.
 func (s *Store) AppendMessage(ctx context.Context, runID string, msg message.Message) (int, error) {
+	return s.AppendMessageWithUsage(ctx, runID, msg, 0, 0, 0)
+}
+
+// AppendMessageWithUsage is AppendMessage plus the provider.Usage and
+// wall-clock latency a model call that produced msg cost — inputTokens/
+// outputTokens/latencyMS are plain ints/int64, not provider.Usage
+// itself, so this package doesn't need to depend on internal/provider
+// for a shape it only ever stores and reads back.
+func (s *Store) AppendMessageWithUsage(ctx context.Context, runID string, msg message.Message, inputTokens, outputTokens int, latencyMS int64) (int, error) {
 	var maxSeq sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM messages WHERE run_id = ?`, runID).Scan(&maxSeq); err != nil {
 		return 0, fmt.Errorf("store: next seq for run %s: %w", runID, err)
@@ -274,8 +278,9 @@ func (s *Store) AppendMessage(ctx context.Context, runID string, msg message.Mes
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO messages (run_id, seq, role, content_json, created_at) VALUES (?, ?, ?, ?, ?)
-	`, runID, seq, string(msg.Role), string(contentJSON), now())
+		INSERT INTO messages (run_id, seq, role, content_json, created_at, input_tokens, output_tokens, latency_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, runID, seq, string(msg.Role), string(contentJSON), now(), inputTokens, outputTokens, latencyMS)
 	if err != nil {
 		return 0, fmt.Errorf("store: append message to run %s: %w", runID, err)
 	}
@@ -306,6 +311,46 @@ func (s *Store) ListMessages(ctx context.Context, runID string) ([]message.Messa
 	return out, rows.Err()
 }
 
+// MessageDetail is a message.Message plus the usage/latency
+// AppendMessageWithUsage recorded for it — the display-layer shape
+// (`runs get`, the HTTP API's run DTO, `runs stats`) wants, as opposed to
+// ListMessages' plain message.Message, which is what gets sent back to a
+// provider as conversation history and has no business carrying
+// storage-specific columns.
+type MessageDetail struct {
+	message.Message
+	InputTokens  int
+	OutputTokens int
+	LatencyMS    int64
+}
+
+func (s *Store) ListMessagesDetailed(ctx context.Context, runID string) ([]MessageDetail, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role, content_json, input_tokens, output_tokens, latency_ms
+		FROM messages WHERE run_id = ? ORDER BY seq ASC
+	`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list messages for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	var out []MessageDetail
+	for rows.Next() {
+		var role, contentJSON string
+		var d MessageDetail
+		if err := rows.Scan(&role, &contentJSON, &d.InputTokens, &d.OutputTokens, &d.LatencyMS); err != nil {
+			return nil, fmt.Errorf("store: scan message: %w", err)
+		}
+		var content []message.ContentBlock
+		if err := json.Unmarshal([]byte(contentJSON), &content); err != nil {
+			return nil, fmt.Errorf("store: unmarshal message content: %w", err)
+		}
+		d.Message = message.Message{Role: message.Role(role), Content: content}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // --- tool calls ---
 
 type ToolCall struct {
@@ -321,6 +366,10 @@ type ToolCall struct {
 	CreatedAt  int64
 	DecidedAt  *int64
 	ExecutedAt *int64
+	// DurationMS is how long the call itself took to run, set alongside
+	// Result by UpdateToolCallResult; 0 until then (or for a denied call,
+	// which never executes).
+	DurationMS int64
 }
 
 func (s *Store) InsertToolCall(ctx context.Context, tc ToolCall) error {
@@ -438,10 +487,10 @@ func (s *Store) CountPendingApprovals(ctx context.Context, runID string) (int, e
 	return n, nil
 }
 
-func (s *Store) UpdateToolCallResult(ctx context.Context, id, result string, isError bool) error {
+func (s *Store) UpdateToolCallResult(ctx context.Context, id, result string, isError bool, durationMS int64) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE tool_calls SET result_json = ?, is_error = ?, executed_at = ? WHERE id = ?
-	`, result, isError, now(), id)
+		UPDATE tool_calls SET result_json = ?, is_error = ?, executed_at = ?, duration_ms = ? WHERE id = ?
+	`, result, isError, now(), durationMS, id)
 	if err != nil {
 		return fmt.Errorf("store: update tool call result %s: %w", id, err)
 	}
@@ -451,7 +500,7 @@ func (s *Store) UpdateToolCallResult(ctx context.Context, id, result string, isE
 func (s *Store) ListToolCalls(ctx context.Context, runID string) ([]ToolCall, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, tool_name, args_json, approval, decided_by, reason,
-		       result_json, is_error, created_at, decided_at, executed_at
+		       result_json, is_error, created_at, decided_at, executed_at, duration_ms
 		FROM tool_calls WHERE run_id = ? ORDER BY created_at ASC
 	`, runID)
 	if err != nil {
@@ -464,7 +513,7 @@ func (s *Store) ListToolCalls(ctx context.Context, runID string) ([]ToolCall, er
 		var tc ToolCall
 		var isErrorInt int
 		if err := rows.Scan(&tc.ID, &tc.RunID, &tc.ToolName, &tc.ArgsJSON, &tc.Approval, &tc.DecidedBy, &tc.Reason,
-			&tc.Result, &isErrorInt, &tc.CreatedAt, &tc.DecidedAt, &tc.ExecutedAt); err != nil {
+			&tc.Result, &isErrorInt, &tc.CreatedAt, &tc.DecidedAt, &tc.ExecutedAt, &tc.DurationMS); err != nil {
 			return nil, fmt.Errorf("store: scan tool call: %w", err)
 		}
 		tc.IsError = isErrorInt != 0

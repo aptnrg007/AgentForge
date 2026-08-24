@@ -64,6 +64,7 @@ type toolCallDTO struct {
 	IsError    bool            `json:"is_error,omitempty"`
 	CreatedAt  int64           `json:"created_at"`
 	ExecutedAt *int64          `json:"executed_at,omitempty"`
+	DurationMS int64           `json:"duration_ms,omitempty"`
 }
 
 func toToolCallDTO(tc store.ToolCall) toolCallDTO {
@@ -78,6 +79,32 @@ func toToolCallDTO(tc store.ToolCall) toolCallDTO {
 		IsError:    tc.IsError,
 		CreatedAt:  tc.CreatedAt,
 		ExecutedAt: tc.ExecutedAt,
+		DurationMS: tc.DurationMS,
+	}
+}
+
+// messageDTO mirrors store.MessageDetail for the API surface — a plain
+// message.Message plus the token/latency cost of the model call that
+// produced it (0 for every role but assistant; see
+// Store.AppendMessageWithUsage). Only runTrace (GET /v1/runs/{id}) uses
+// this instead of message.Message directly — the run-outcome DTOs
+// (runResponse, doneEvent) stay plain, since a script consuming `run`'s
+// JSON output has no use for per-message cost, only runs get does.
+type messageDTO struct {
+	Role         message.Role           `json:"role"`
+	Content      []message.ContentBlock `json:"content"`
+	InputTokens  int                    `json:"input_tokens,omitempty"`
+	OutputTokens int                    `json:"output_tokens,omitempty"`
+	LatencyMS    int64                  `json:"latency_ms,omitempty"`
+}
+
+func toMessageDTO(d store.MessageDetail) messageDTO {
+	return messageDTO{
+		Role:         d.Role,
+		Content:      d.Content,
+		InputTokens:  d.InputTokens,
+		OutputTokens: d.OutputTokens,
+		LatencyMS:    d.LatencyMS,
 	}
 }
 
@@ -140,13 +167,13 @@ func toRunSummary(r store.Run) runSummary {
 }
 
 type runTrace struct {
-	RunID     string            `json:"run_id"`
-	AgentName string            `json:"agent_name"`
-	State     string            `json:"state"`
-	TurnCount int               `json:"turn_count"`
-	Error     *string           `json:"error,omitempty"`
-	CreatedAt int64             `json:"created_at"`
-	UpdatedAt int64             `json:"updated_at"`
-	Messages  []message.Message `json:"messages"`
-	ToolCalls []toolCallDTO     `json:"tool_calls"`
+	RunID     string        `json:"run_id"`
+	AgentName string        `json:"agent_name"`
+	State     string        `json:"state"`
+	TurnCount int           `json:"turn_count"`
+	Error     *string       `json:"error,omitempty"`
+	CreatedAt int64         `json:"created_at"`
+	UpdatedAt int64         `json:"updated_at"`
+	Messages  []messageDTO  `json:"messages"`
+	ToolCalls []toolCallDTO `json:"tool_calls"`
 }

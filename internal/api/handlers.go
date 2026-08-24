@@ -382,7 +382,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	msgs, err := s.store.ListMessages(ctx, id)
+	msgs, err := s.store.ListMessagesDetailed(ctx, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -393,6 +393,10 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	messages := make([]messageDTO, len(msgs))
+	for i, m := range msgs {
+		messages[i] = toMessageDTO(m)
+	}
 	toolCalls := make([]toolCallDTO, len(calls))
 	for i, c := range calls {
 		toolCalls[i] = toToolCallDTO(c)
@@ -406,7 +410,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		Error:     run.Error,
 		CreatedAt: run.CreatedAt,
 		UpdatedAt: run.UpdatedAt,
-		Messages:  msgs,
+		Messages:  messages,
 		ToolCalls: toolCalls,
 	})
 }
