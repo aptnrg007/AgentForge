@@ -371,6 +371,37 @@ POST   /v1/runs/{id}/cancel          # stop a non-terminal run immediately; 409 
 GET    /healthz
 ```
 
+## Go SDK
+
+Every other entry point — the CLI, the HTTP daemon — is a thin wrapper over the
+same `internal/agent.Build` + `internal/runtime.Engine` + `internal/store` this
+package uses; `pkg/agentforge` is that wiring, exported, so an agent can be run
+in-process from Go code without a daemon:
+
+```go
+import "agentforge/pkg/agentforge"
+
+ag, err := agentforge.Load("agent.yaml")
+if err != nil {
+    log.Fatal(err)
+}
+defer ag.Close()
+
+run, err := ag.Run(context.Background(), "Find the latest issues")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(run.Output)
+```
+
+A run that stops at `run.State == "awaiting_approval"` is resolved the same way the
+CLI resolves it — `ag.Approve`/`ag.Deny` a pending call (`run.Pending`), then
+`ag.Resume` — and `ag.Cancel` stops a non-terminal run immediately. `WithEvents`
+subscribes to the same token/tool_call/tool_result events `agentforge chat` and the
+HTTP API's `/stream` endpoint use. Runs started through the SDK use the same local
+SQLite store as the CLI (`~/.agentforge/agentforge.db` by default, override with
+`agentforge.WithDB`), so they show up in `agentforge runs list` and vice versa.
+
 ## What's here (and what isn't)
 
 Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.

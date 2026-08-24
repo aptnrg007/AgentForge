@@ -37,6 +37,7 @@ linters:
         - (*agentforge/internal/store.Store).Close
         - (*agentforge/internal/mcp.Registry).Close
         - (agentforge/internal/provider.Stream).Close
+        - (*agentforge/pkg/agentforge.Agent).Close
 
   exclusions:
     rules:

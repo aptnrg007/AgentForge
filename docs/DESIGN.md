@@ -163,3 +163,22 @@ with a `run_id` field so a multi-run process's log can be filtered to one run.
 including streaming ones — `statusWriter` forwards `Flush()` to the underlying
 `http.ResponseWriter` specifically so wrapping it doesn't break `handleStreamAgent`'s
 SSE responses, which type-assert the writer they're given to `http.Flusher`.
+
+## §14 — Public SDK (`pkg/agentforge`)
+
+Before this, every package was `internal/`, so `agentforge` as a module had zero
+importable surface — `internal/cli` and `internal/api` were each their own
+independent wiring of `internal/agent.Build` + `internal/runtime.Engine` +
+`internal/store`, and nothing outside the module could reach the runtime directly.
+`pkg/agentforge` is that same wiring exported: `Load` parses a config and opens the
+same local store the CLI uses (`~/.agentforge/agentforge.db` by default), and
+`Agent.Run`/`Resume`/`Approve`/`Deny`/`Cancel` map directly onto
+`runtime.Engine.Run`/`RecordApproval`/`Cancel` — a fresh `*runtime.Engine` per call
+via `agent.Build`, not one cached and shared across calls, since `Engine.OnEvent`
+overwrites a single callback field and two concurrent `Agent.Run` calls sharing one
+engine would race on it.
+
+Designing this surface is what motivated collapsing the three near-identical drive
+loops into `runtime.Engine.Run` (§ the lifecycle-holes work) — the SDK needed
+exactly one "step until a stop point" call, and duplicating internal/cli's
+bespoke one would have meant a fourth copy, not a third.
