@@ -1,5 +1,5 @@
 // Package runtime implements the agent run state machine described in
-// PLAN.md section 5. Every call to Step loads run state from SQLite,
+// docs/DESIGN.md section 5. Every call to Step loads run state from SQLite,
 // performs exactly one transition, and writes it back — a run survives
 // process restart because nothing lives only in memory.
 package runtime
@@ -38,6 +38,46 @@ const (
 // run's message trace: repair appends a RoleTool message, a schema
 // violation appends a RoleUser message.
 const maxRepairAttempts = 2
+
+// ErrAlreadyTerminal is returned by Cancel when the run has already
+// reached completed, failed, or cancelled — there's nothing left to stop.
+// internal/api/handlers.go maps it to 409 Conflict, the same status
+// store.ErrNotPending gets for the analogous "already decided" case in
+// RecordApproval.
+var ErrAlreadyTerminal = errors.New("runtime: run is already in a terminal state")
+
+// terminalCtx returns a context for persisting a run's outcome — a
+// terminal state, or a settled tool call's result — that stays usable
+// even when ctx has already been cancelled or hit its deadline, which is
+// often exactly why this write is happening (see stepModel's provider-
+// error branch). Writing with ctx directly there would make the write
+// fail too: the run's turn count and failure reason would be silently
+// lost, and it would be stuck in a non-terminal state instead of
+// recording what happened — see docs/DESIGN.md ground rule 1. The fixed
+// timeout bounds how long the write can block if the store itself is
+// wedged; it isn't meant to be generous, just enough for one local SQLite
+// write.
+func terminalCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
+
+// classifyContextErr maps a dead ctx (cause must be non-nil, i.e.
+// ctx.Err()) to the terminal state and reason a run ending because of it
+// should get: context.Canceled — an external stop request (a
+// SIGINT-derived ctx, an HTTP client disconnect, Engine.Cancel doesn't go
+// through this path itself) — belongs in StateCancelled; anything else,
+// in practice always context.DeadlineExceeded from RunTimeout
+// (limits.timeout), is a policy limit being hit rather than a stop
+// request and belongs in StateFailed. Shared by EndIfContextDone and
+// stepTools' run-level-deadline case; stepModel's provider-error branch
+// does its own version of this same classification inline, since it also
+// needs to fold the provider's error text into the reason.
+func classifyContextErr(cause error) (State, string) {
+	if errors.Is(cause, context.Canceled) {
+		return StateCancelled, "cancelled"
+	}
+	return StateFailed, "run exceeded its time limit"
+}
 
 // ToolExecutor runs a single tool call and returns its result text.
 type ToolExecutor func(ctx context.Context, input json.RawMessage) (string, error)
@@ -189,6 +229,13 @@ type Config struct {
 	Approvals   ApprovalPolicy
 	Output      OutputPolicy
 	ToolPolicy  ToolPolicy
+	// RunTimeout bounds a run's total wall-clock duration end to end —
+	// model calls, tool execution, everything Step does — measured from
+	// the run's persisted CreatedAt, not from whenever this particular
+	// process happens to start stepping it. 0 means unbounded, the
+	// pre-existing behavior; agent.Build sets this from limits.timeout.
+	// See Step for where the deadline is actually derived and applied.
+	RunTimeout time.Duration
 }
 
 type Engine struct {
@@ -301,17 +348,54 @@ func (e *Engine) Step(ctx context.Context, runID string) (State, error) {
 		return "", err
 	}
 
+	if e.cfg.RunTimeout > 0 {
+		// Anchored to the run's persisted CreatedAt, not time.Now() —
+		// the deadline survives a process restart mid-run instead of
+		// silently resetting each time something starts stepping it
+		// again, matching ground rule 1 (state re-derived from persisted
+		// data).
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, time.UnixMilli(run.CreatedAt).Add(e.cfg.RunTimeout))
+		defer cancel()
+	}
+
+	var state State
 	switch State(run.State) {
 	case StateReadyForModel:
-		return e.stepModel(ctx, run)
+		state, err = e.stepModel(ctx, run)
 	case StateReadyForTools:
-		return e.stepTools(ctx, run)
+		state, err = e.stepTools(ctx, run)
 	case StateAwaitingApproval:
-		return e.stepAwaitingApproval(ctx, run)
+		state, err = e.stepAwaitingApproval(ctx, run)
 	default:
 		// completed, failed, cancelled: nothing to do.
 		return State(run.State), nil
 	}
+
+	if err != nil && ctx.Err() != nil {
+		// stepModel's provider-error branch and stepTools' run-level-
+		// deadline case already classify and persist the right terminal
+		// state themselves before returning (and return a nil error when
+		// they do, so this branch won't double-fire for those). This
+		// catches everything else a dead ctx can break along the way —
+		// GetRun/ListMessages/AppendMessage/InsertToolCall calls with no
+		// classification logic of their own — so Step never leaves a run
+		// stranded in a non-terminal state just because whichever
+		// specific store call happened to be running when ctx died
+		// wasn't one of the two that already knew how to handle it.
+		endState, reason := classifyContextErr(ctx.Err())
+		pctx, cancel := terminalCtx(ctx)
+		finalState, uerr := e.endRun(pctx, runID, endState, reason)
+		cancel()
+		if uerr == nil {
+			return finalState, nil
+		}
+		// endRun itself failed (e.g. ErrAlreadyTerminal: the run reached
+		// some other terminal state by a different path already) — fall
+		// through to the original error below, which is still
+		// informative even though this specific recovery didn't apply.
+	}
+	return state, err
 }
 
 // stepAwaitingApproval lazily applies the approval timeout, if one is
@@ -380,6 +464,73 @@ func (e *Engine) EditPendingCallArgs(ctx context.Context, callID string, args js
 	return e.store.UpdateToolCallArgs(ctx, callID, string(args))
 }
 
+// endRun forces a non-terminal run straight to state, fetching its
+// current TurnCount/RepairCount first so they're preserved rather than
+// reset to zero. Shared by Cancel (an explicit stop request) and
+// EndIfContextDone (a drive loop's dead-ctx fallback) — the two differ
+// only in which terminal state and reason they end up wanting.
+func (e *Engine) endRun(ctx context.Context, runID string, state State, reason string) (State, error) {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	switch State(run.State) {
+	case StateCompleted, StateFailed, StateCancelled:
+		return State(run.State), fmt.Errorf("run %s is already %s: %w", runID, run.State, ErrAlreadyTerminal)
+	}
+	if err := e.store.UpdateRun(ctx, runID, string(state), run.TurnCount, run.RepairCount, &reason); err != nil {
+		return "", err
+	}
+	return state, nil
+}
+
+// Cancel moves a non-terminal run straight to StateCancelled, regardless
+// of which non-terminal state it's currently in (ready_for_model,
+// ready_for_tools, or awaiting_approval — unlike RecordApproval, no
+// pending tool calls need to be decided first). It's the direct entry
+// point for an explicit stop request (`agentforge runs cancel`,
+// POST /v1/runs/{id}/cancel). Cancelling an already-terminal run is
+// rejected: a run that finished, failed, or was already cancelled has
+// nothing left to stop.
+func (e *Engine) Cancel(ctx context.Context, runID string) (State, error) {
+	return e.endRun(ctx, runID, StateCancelled, "cancelled")
+}
+
+// EndIfContextDone is a drive loop's fast pre-check: called with a ctx
+// that's already Done() (SIGINT, an HTTP client disconnect, a
+// limits.timeout deadline), instead of the loop calling Step anyway and
+// having it fail at its own GetRun for the same reason. Step itself
+// self-heals the same class of problem when ctx dies *during* a call
+// (see Step's own dead-ctx recovery below), so this and that cover the
+// same ground from two different angles — the loop should never actually
+// need Step to fail on a dead ctx and NOT recover, but this exists so the
+// loop doesn't have to make that call with a context it already knows is
+// dead.
+//
+// Returns "" when ctx is still alive (nothing to do — the caller should
+// call Step normally). Otherwise returns the terminal state the run
+// ended up in: classified the same way Step's own recovery is —
+// context.Canceled (an external stop request) belongs in StateCancelled;
+// anything else (in practice, only context.DeadlineExceeded —
+// limits.timeout hit) is a policy limit being hit, not a stop request,
+// and belongs in StateFailed. Uses its own detached, timeout-bounded
+// context internally (ctx itself is exactly what's dead here), and is
+// best-effort: if the run already reached some other terminal state by a
+// different path, endRun's ErrAlreadyTerminal is swallowed and that
+// already-terminal state is returned instead — the caller only cares
+// that the run ended up terminal one way or another.
+func (e *Engine) EndIfContextDone(ctx context.Context, runID string) State {
+	cause := ctx.Err()
+	if cause == nil {
+		return ""
+	}
+	state, reason := classifyContextErr(cause)
+	pctx, cancel := terminalCtx(ctx)
+	defer cancel()
+	finalState, _ := e.endRun(pctx, runID, state, reason)
+	return finalState
+}
+
 func (e *Engine) resolveAwaitingApproval(ctx context.Context, runID string) (State, error) {
 	run, err := e.store.GetRun(ctx, runID)
 	if err != nil {
@@ -434,7 +585,10 @@ func (e *Engine) complete(ctx context.Context, req provider.Request) (*provider.
 func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	if run.TurnCount >= e.cfg.MaxTurns {
 		errStr := fmt.Sprintf("max turns (%d) exceeded", e.cfg.MaxTurns)
-		if err := e.store.UpdateRun(ctx, run.ID, string(StateFailed), run.TurnCount, run.RepairCount, &errStr); err != nil {
+		pctx, cancel := terminalCtx(ctx)
+		err := e.store.UpdateRun(pctx, run.ID, string(StateFailed), run.TurnCount, run.RepairCount, &errStr)
+		cancel()
+		if err != nil {
 			return "", err
 		}
 		return StateFailed, nil
@@ -456,11 +610,27 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	})
 	turnCount := run.TurnCount + 1
 	if err != nil {
-		errStr := fmt.Sprintf("provider error: %v", err)
-		if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), turnCount, run.RepairCount, &errStr); uerr != nil {
+		// ctx.Err() (the ORIGINAL ctx, not err itself, which may just be a
+		// wrapped net/http error) is the reliable signal for *why* the
+		// provider call failed: nil means a genuine provider error;
+		// context.Canceled means something external stopped this run (a
+		// SIGINT-derived ctx, an HTTP client disconnect) and belongs in
+		// StateCancelled, not StateFailed; context.DeadlineExceeded means
+		// limits.timeout (or a future caller deadline) was hit.
+		state, reason := StateFailed, fmt.Sprintf("provider error: %v", err)
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			state, reason = StateCancelled, "run cancelled"
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			reason = "run exceeded its time limit: " + reason
+		}
+		pctx, cancel := terminalCtx(ctx)
+		uerr := e.store.UpdateRun(pctx, run.ID, string(state), turnCount, run.RepairCount, &reason)
+		cancel()
+		if uerr != nil {
 			return "", uerr
 		}
-		return StateFailed, nil
+		return state, nil
 	}
 
 	if _, err := e.store.AppendMessage(ctx, run.ID, message.Message{Role: message.RoleAssistant, Content: resp.Content}); err != nil {
@@ -511,7 +681,10 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		repairCount := run.RepairCount + 1
 		if repairCount > maxRepairAttempts {
 			errStr := "tool call repair failed after repeated malformed calls"
-			if err := e.store.UpdateRun(ctx, run.ID, string(StateFailed), turnCount, repairCount, &errStr); err != nil {
+			pctx, cancel := terminalCtx(ctx)
+			err := e.store.UpdateRun(pctx, run.ID, string(StateFailed), turnCount, repairCount, &errStr)
+			cancel()
+			if err != nil {
 				return "", err
 			}
 			return StateFailed, nil
@@ -603,7 +776,10 @@ func (e *Engine) validateOutput(ctx context.Context, run *store.Run, content []m
 
 	if e.cfg.Output.OnInvalid == "fail" {
 		errStr := "output schema validation failed: " + strings.Join(problems, "; ")
-		if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), turnCount, run.RepairCount, &errStr); uerr != nil {
+		pctx, cancel := terminalCtx(ctx)
+		uerr := e.store.UpdateRun(pctx, run.ID, string(StateFailed), turnCount, run.RepairCount, &errStr)
+		cancel()
+		if uerr != nil {
 			return "", true, uerr
 		}
 		return StateFailed, true, nil
@@ -612,7 +788,10 @@ func (e *Engine) validateOutput(ctx context.Context, run *store.Run, content []m
 	retries := run.RepairCount + 1
 	if retries > e.cfg.Output.MaxRetries {
 		errStr := fmt.Sprintf("output schema validation failed after %d retries: %s", e.cfg.Output.MaxRetries, strings.Join(problems, "; "))
-		if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), turnCount, retries, &errStr); uerr != nil {
+		pctx, cancel := terminalCtx(ctx)
+		uerr := e.store.UpdateRun(pctx, run.ID, string(StateFailed), turnCount, retries, &errStr)
+		cancel()
+		if uerr != nil {
 			return "", true, uerr
 		}
 		return StateFailed, true, nil
@@ -688,6 +867,35 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 				cancel()
 
 				switch {
+				case err != nil && ctx.Err() != nil:
+					// The outer ctx (not callCtx, which inherits ctx's
+					// deadline whether or not tool_policy also applies
+					// its own) is itself dead: an external stop request
+					// (SIGINT, an HTTP client disconnect) or
+					// limits.timeout's run-level deadline — not this
+					// tool's own tool_policy timeout, even though d==0
+					// below would otherwise make it look like one. End
+					// the run the same way stepModel's provider-error
+					// branch does, rather than reporting a misleading
+					// "tool policy" timeout or feeding a raw "context
+					// canceled" error back to a model that isn't going to
+					// get another turn anyway.
+					resultText, isError = err.Error(), true
+					pctx, cancel := terminalCtx(ctx)
+					uerr := e.store.UpdateToolCallResult(pctx, tc.ID, resultText, isError)
+					cancel()
+					if uerr != nil {
+						return "", uerr
+					}
+					e.emit(Event{Kind: EventToolResult, CallID: tc.ID, ToolName: tc.ToolName, Result: resultText, IsError: isError})
+					state, reason := classifyContextErr(ctx.Err())
+					pctx, cancel = terminalCtx(ctx)
+					finalState, uerr := e.endRun(pctx, run.ID, state, reason)
+					cancel()
+					if uerr != nil {
+						return "", uerr
+					}
+					return finalState, nil
 				case err != nil && errors.Is(err, context.DeadlineExceeded):
 					d := e.cfg.ToolPolicy.timeoutFor(tc.ToolName)
 					timeoutMsg := fmt.Sprintf("tool %q timed out after %s", tc.ToolName, d)
@@ -697,12 +905,23 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 						// shows the timeout), then fail the run
 						// directly — no further unexecuted calls in
 						// this batch are processed, and no next model
-						// turn is needed.
-						if uerr := e.store.UpdateToolCallResult(ctx, tc.ID, timeoutMsg, true); uerr != nil {
+						// turn is needed. Both writes use terminalCtx: a
+						// tool timeout derives callCtx from ctx, so ctx
+						// itself is often still fine here, but if it's
+						// *also* cancelled or past its own deadline right
+						// now, these are exactly the writes that must not
+						// be lost.
+						pctx, cancel := terminalCtx(ctx)
+						uerr := e.store.UpdateToolCallResult(pctx, tc.ID, timeoutMsg, true)
+						cancel()
+						if uerr != nil {
 							return "", uerr
 						}
 						e.emit(Event{Kind: EventToolResult, CallID: tc.ID, ToolName: tc.ToolName, Result: timeoutMsg, IsError: true})
-						if uerr := e.store.UpdateRun(ctx, run.ID, string(StateFailed), run.TurnCount, run.RepairCount, &timeoutMsg); uerr != nil {
+						pctx, cancel = terminalCtx(ctx)
+						uerr = e.store.UpdateRun(pctx, run.ID, string(StateFailed), run.TurnCount, run.RepairCount, &timeoutMsg)
+						cancel()
+						if uerr != nil {
 							return "", uerr
 						}
 						return StateFailed, nil
@@ -720,7 +939,15 @@ func (e *Engine) stepTools(ctx context.Context, run *store.Run) (State, error) {
 			}
 		}
 
-		if err := e.store.UpdateToolCallResult(ctx, tc.ID, resultText, isError); err != nil {
+		// terminalCtx: this call's own result must be recorded even if the
+		// run's overall ctx has just been cancelled — otherwise the
+		// approval/execution work already done for tc is lost, and the
+		// tool_calls row is left with no result at all instead of showing
+		// what actually happened.
+		pctx, cancel := terminalCtx(ctx)
+		err := e.store.UpdateToolCallResult(pctx, tc.ID, resultText, isError)
+		cancel()
+		if err != nil {
 			return "", err
 		}
 		e.emit(Event{Kind: EventToolResult, CallID: tc.ID, ToolName: tc.ToolName, Result: resultText, IsError: isError})
@@ -758,9 +985,10 @@ func summarizeToolResultParts(parts []message.ContentBlock) string {
 	var b strings.Builder
 	imageCount := 0
 	for _, p := range parts {
-		if p.Type == message.BlockText {
+		switch p.Type {
+		case message.BlockText:
 			b.WriteString(p.Text)
-		} else if p.Type == message.BlockImage {
+		case message.BlockImage:
 			imageCount++
 		}
 	}

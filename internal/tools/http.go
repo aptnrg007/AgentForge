@@ -8,11 +8,30 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"agentforge/internal/config"
 	"agentforge/internal/runtime"
 	"agentforge/internal/schema"
 )
+
+// httpToolClient bounds how long an http:-backed tool_definition waits
+// for the *first* byte of a response — tool_policy already covers a call
+// that stalls after it starts responding (internal/runtime.stepTools
+// wraps every call in context.WithTimeout, if tool_policy.timeout is
+// configured), but tool_policy is opt-in: a config with none set left a
+// tool call with no deadline of its own at all, same gap
+// internal/provider's newHTTPClient closes for the model call itself.
+// Not http.Client.Timeout, which would also cap a large, legitimately
+// slow response body — see internal/provider/provider.go for the fuller
+// version of this reasoning.
+var httpToolClient = &http.Client{
+	Transport: func() *http.Transport {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.ResponseHeaderTimeout = 2 * time.Minute
+		return t
+	}(),
+}
 
 // httpExecutor builds the runtime.ToolExecutor for an http:-backed
 // ToolDefinition. name is only used in error messages.
@@ -82,11 +101,12 @@ func httpExecutor(name string, cfg config.HTTPToolConfig, validator *schema.Vali
 			req.Header.Set(k, v)
 		}
 
-		// No client-level timeout: ctx already carries the run's
-		// tool_policy deadline (internal/runtime.stepTools wraps
-		// every call in context.WithTimeout before invoking
-		// Execute), and run cancellation propagates the same way.
-		resp, err := http.DefaultClient.Do(req)
+		// No client-level Timeout (see httpToolClient) — but ctx still
+		// carries the run's tool_policy deadline when one is configured
+		// (internal/runtime.stepTools wraps every call in
+		// context.WithTimeout before invoking Execute), and run
+		// cancellation propagates the same way.
+		resp, err := httpToolClient.Do(req)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}

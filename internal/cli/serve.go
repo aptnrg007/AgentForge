@@ -2,8 +2,6 @@ package cli
 
 import (
 	"log/slog"
-	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -33,10 +31,10 @@ func newServeCmd() *cobra.Command {
 			registry := mcp.NewRegistry(logger)
 			defer registry.Close()
 
-			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer cancel()
-
-			return api.Serve(ctx, addr, st, registry, logger)
+			// cmd.Context() is already SIGINT/SIGTERM-cancellable — see
+			// main.go and root.go's Execute — so no need for serve to
+			// install its own signal handling anymore.
+			return api.Serve(cmd.Context(), addr, st, registry, logger)
 		},
 	}
 

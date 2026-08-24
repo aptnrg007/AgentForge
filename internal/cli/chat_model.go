@@ -225,7 +225,7 @@ func (m chatModel) updateApproval(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeStepping
 		return m, m.stepCmd()
 	case "e":
-		m.editInput.SetValue(string(call.ArgsJSON))
+		m.editInput.SetValue(call.ArgsJSON)
 		m.editInput.CursorEnd()
 		cmd := m.editInput.Focus()
 		m.mode = modeEditInput

@@ -563,6 +563,35 @@ tool_definitions:
 `,
 			wantErr: "scheme and host must be literal",
 		},
+		{
+			// http transport isn't implemented (internal/agent.Build
+			// rejects it) — validate rejects it too, at load time rather
+			// than letting a config validate cleanly and only fail once a
+			// run actually tries to connect. See docs/DESIGN.md ground
+			// rule 3.
+			name: "http mcp transport is rejected at load time",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+mcp:
+  - {name: gh, transport: http, url: "https://example.com/mcp"}
+`,
+			wantErr: `transport "http" is not yet supported`,
+		},
+		{
+			// session: was removed (it validated but nothing ever
+			// consumed it — dead config is worse than no config). A
+			// config still carrying it now fails the same way any other
+			// typo'd/removed key does.
+			name: "session key no longer exists",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+session:
+  type: sqlite
+`,
+			wantErr: `unknown field "session"`,
+		},
 	}
 
 	for _, tc := range cases {

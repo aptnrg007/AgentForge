@@ -45,7 +45,7 @@ func TestCommandToolNoShellInvolved(t *testing.T) {
 		t.Fatalf("out = %q, want %q (the whole string echoed literally, not shell-interpreted)", out, want)
 	}
 	if _, err := os.Stat("/tmp/should-not-exist-agentforge-test"); err == nil {
-		os.Remove("/tmp/should-not-exist-agentforge-test")
+		_ = os.Remove("/tmp/should-not-exist-agentforge-test")
 		t.Fatal("the embedded `touch` ran — input reached a shell")
 	}
 }

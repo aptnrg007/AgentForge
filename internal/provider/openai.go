@@ -31,7 +31,7 @@ func NewOpenAI(apiKey, baseURL string) *OpenAI {
 	if baseURL == "" {
 		baseURL = defaultOpenAIBaseURL
 	}
-	return &OpenAI{APIKey: apiKey, BaseURL: strings.TrimSuffix(baseURL, "/"), Client: http.DefaultClient}
+	return &OpenAI{APIKey: apiKey, BaseURL: strings.TrimSuffix(baseURL, "/"), Client: newHTTPClient()}
 }
 
 func (o *OpenAI) Name() string { return "openai" }
@@ -421,67 +421,68 @@ type openAIStream struct {
 	err      error
 }
 
+// Next reads exactly one SSE frame per call — every path below returns, so
+// this was previously wrapped in a `for {}` that could never actually
+// iterate a second time; removed rather than left as dead loop syntax.
 func (s *openAIStream) Next() bool {
 	if s.err != nil || s.done {
 		return false
 	}
-	for {
-		data, ok := s.reader.next()
-		if !ok {
-			if err := s.reader.err(); err != nil {
-				s.err = fmt.Errorf("openai: read stream: %w", err)
-			} else {
-				s.err = fmt.Errorf("openai: stream ended without [DONE]")
-			}
-			return false
+	data, ok := s.reader.next()
+	if !ok {
+		if err := s.reader.err(); err != nil {
+			s.err = fmt.Errorf("openai: read stream: %w", err)
+		} else {
+			s.err = fmt.Errorf("openai: stream ended without [DONE]")
 		}
+		return false
+	}
 
-		s.curDelta = ""
-		if string(data) == "[DONE]" {
-			s.done = true
-			return true
-		}
-
-		var chunk openAIStreamChunk
-		if err := json.Unmarshal(data, &chunk); err != nil {
-			s.err = fmt.Errorf("openai: decode stream chunk: %w", err)
-			return false
-		}
-		if chunk.Usage != nil {
-			s.usage = Usage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
-		}
-		if len(chunk.Choices) == 0 {
-			// The final usage-bearing chunk (stream_options.include_usage)
-			// carries an empty choices array — not an error, just nothing
-			// else to do with this frame.
-			return true
-		}
-
-		choice := chunk.Choices[0]
-		if choice.FinishReason != "" {
-			s.stopReason = choice.FinishReason
-		}
-		if choice.Delta.Content != "" {
-			s.text.WriteString(choice.Delta.Content)
-			s.curDelta = choice.Delta.Content
-		}
-		for _, tc := range choice.Delta.ToolCalls {
-			acc, ok := s.toolCalls[tc.Index]
-			if !ok {
-				acc = &openAIToolCallAccum{}
-				s.toolCalls[tc.Index] = acc
-				s.toolOrder = append(s.toolOrder, tc.Index)
-			}
-			if tc.ID != "" {
-				acc.id = tc.ID
-			}
-			if tc.Function.Name != "" {
-				acc.name = tc.Function.Name
-			}
-			acc.argsBuf.WriteString(tc.Function.Arguments)
-		}
+	s.curDelta = ""
+	if string(data) == "[DONE]" {
+		s.done = true
 		return true
 	}
+
+	var chunk openAIStreamChunk
+	if err := json.Unmarshal(data, &chunk); err != nil {
+		s.err = fmt.Errorf("openai: decode stream chunk: %w", err)
+		return false
+	}
+	if chunk.Usage != nil {
+		s.usage = Usage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
+	}
+	if len(chunk.Choices) == 0 {
+		// The final usage-bearing chunk (stream_options.include_usage)
+		// carries an empty choices array — not an error, just nothing
+		// else to do with this frame.
+		return true
+	}
+
+	choice := chunk.Choices[0]
+	if choice.FinishReason != "" {
+		s.stopReason = choice.FinishReason
+	}
+	if choice.Delta.Content != "" {
+		s.text.WriteString(choice.Delta.Content)
+		s.curDelta = choice.Delta.Content
+	}
+	for _, tc := range choice.Delta.ToolCalls {
+		acc, ok := s.toolCalls[tc.Index]
+		if !ok {
+			acc = &openAIToolCallAccum{}
+			s.toolCalls[tc.Index] = acc
+			s.toolOrder = append(s.toolOrder, tc.Index)
+		}
+		if tc.ID != "" {
+			acc.id = tc.ID
+		}
+		if tc.Function.Name != "" {
+			acc.name = tc.Function.Name
+		}
+		acc.argsBuf.WriteString(tc.Function.Arguments)
+	}
+	return true
 }
 
 func (s *openAIStream) Delta() string { return s.curDelta }

@@ -141,7 +141,11 @@ func schemaSetFromYAML(raw []byte) bool {
 // emitRemoteRunOutcome renders a remoteRun's result and reports whether
 // the run failed, so callers can propagate a real exit code instead of
 // always returning nil regardless of outcome.
-func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaSet bool, elapsed time.Duration) error {
+// A --output file's Close error is checked, not dropped — same reasoning
+// as emitOutcome in localrun.go — but only surfaces when nothing else
+// already failed: a run that genuinely failed should still report *that*
+// error, not a Close error that raced it.
+func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaSet bool, elapsed time.Duration) (err error) {
 	res := runResult{
 		RunID: run.RunID, State: run.State, Error: run.Error, Messages: run.Messages,
 		Pending: run.Pending, DurationMS: elapsed.Milliseconds(), SchemaSet: schemaSet, Server: server,
@@ -150,8 +154,12 @@ func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaS
 	if err != nil {
 		return err
 	}
-	defer closeW()
-	if err := emitRunResult(w, o, res); err != nil {
+	defer func() {
+		if cerr := closeW(); cerr != nil && err == nil {
+			err = fmt.Errorf("write --output %s: %w", o.path, cerr)
+		}
+	}()
+	if err = emitRunResult(w, o, res); err != nil {
 		return err
 	}
 
@@ -160,9 +168,9 @@ func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaS
 		if run.Error != nil {
 			errStr = *run.Error
 		}
-		return fmt.Errorf("run %s failed: %s", run.RunID, errStr)
+		err = fmt.Errorf("run %s failed: %s", run.RunID, errStr)
 	}
-	return nil
+	return err
 }
 
 func newRunID() string {

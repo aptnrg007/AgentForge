@@ -1,8 +1,8 @@
 // Package config loads and validates the agentforge YAML schema described
-// in PLAN.md section 4: YAML -> JSON (sigs.k8s.io/yaml) -> these structs.
-// Unknown keys are load errors (ground rule 5), and ${ENV_VAR} references
-// are resolved at load time so a typo'd or missing secret fails immediately
-// instead of at tool-call time (ground rule 3).
+// in docs/DESIGN.md section 4: YAML -> JSON (sigs.k8s.io/yaml) -> these
+// structs. Unknown keys are load errors (ground rule 5), and ${ENV_VAR}
+// references are resolved at load time so a typo'd or missing secret fails
+// immediately instead of at tool-call time (ground rule 3).
 package config
 
 import "encoding/json"
@@ -17,7 +17,6 @@ type Config struct {
 	Tools           []string         `json:"tools,omitempty"`
 	Approvals       ApprovalsConfig  `json:"approvals,omitempty"`
 	Limits          LimitsConfig     `json:"limits,omitempty"`
-	Session         SessionConfig    `json:"session,omitempty"`
 	Output          OutputConfig     `json:"output,omitempty"`
 	ToolPolicy      ToolPolicyConfig `json:"tool_policy,omitempty"`
 
@@ -119,12 +118,6 @@ type LimitsConfig struct {
 	MaxTurns  int    `json:"max_turns,omitempty"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
-}
-
-// SessionConfig is parsed and validated starting in Phase 3, but session
-// persistence itself isn't implemented until a later phase.
-type SessionConfig struct {
-	Type string `json:"type,omitempty"`
 }
 
 // OutputConfig turns on schema-validated structured output for a run's

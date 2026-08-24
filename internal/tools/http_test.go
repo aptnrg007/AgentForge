@@ -208,6 +208,25 @@ func TestHTTPToolNon2xxIsError(t *testing.T) {
 	}
 }
 
+// TestHTTPToolClientHasResponseHeaderTimeoutNotClientTimeout locks in
+// httpExecutor's deliberate choice not to use http.DefaultClient (which
+// has no timeout at all — the original "an http:-backed tool with no
+// tool_policy configured can hang a run forever" gap) and not
+// Client.Timeout either (which would also cap a legitimately large
+// response body, not just a provider that never answers at all).
+func TestHTTPToolClientHasResponseHeaderTimeoutNotClientTimeout(t *testing.T) {
+	if httpToolClient == http.DefaultClient {
+		t.Fatal("httpToolClient must not be http.DefaultClient (no timeout at all)")
+	}
+	if httpToolClient.Timeout != 0 {
+		t.Fatalf("httpToolClient.Timeout = %v, want 0 (must not cap a whole response body)", httpToolClient.Timeout)
+	}
+	transport, ok := httpToolClient.Transport.(*http.Transport)
+	if !ok || transport.ResponseHeaderTimeout <= 0 {
+		t.Fatalf("expected a *http.Transport with ResponseHeaderTimeout set, got %T", httpToolClient.Transport)
+	}
+}
+
 func TestHTTPToolResponseTruncatedAtCap(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(strings.Repeat("x", 100)))

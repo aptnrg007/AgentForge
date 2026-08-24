@@ -29,7 +29,7 @@ func NewAnthropic(apiKey, baseURL string) *Anthropic {
 	if baseURL == "" {
 		baseURL = defaultAnthropicBaseURL
 	}
-	return &Anthropic{APIKey: apiKey, BaseURL: strings.TrimSuffix(baseURL, "/"), Client: http.DefaultClient}
+	return &Anthropic{APIKey: apiKey, BaseURL: strings.TrimSuffix(baseURL, "/"), Client: newHTTPClient()}
 }
 
 func (a *Anthropic) Name() string { return "anthropic" }

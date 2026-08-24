@@ -17,7 +17,7 @@ var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 // can't corrupt the document it's substituted into.
 func interpolateEnv(v reflect.Value) error {
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
 			return nil
 		}

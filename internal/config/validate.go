@@ -54,7 +54,7 @@ func (c *Config) validate() error {
 				}
 			}
 			if !matched {
-				return fmt.Errorf("tool_definitions[%d] (%s): excluded by the tools: filter — add %q to tools:", i, td.Name, td.Name)
+				return fmt.Errorf("tool_definitions[%d] (%s): excluded by the tools: filter — add %q to tools", i, td.Name, td.Name)
 			}
 		}
 	}
@@ -77,12 +77,6 @@ func (c *Config) validate() error {
 	if err := c.ToolPolicy.validate(); err != nil {
 		return fmt.Errorf("tool_policy: %w", err)
 	}
-	switch c.Session.Type {
-	case "", "none", "sqlite":
-	default:
-		return fmt.Errorf("session.type: unknown value %q", c.Session.Type)
-	}
-
 	return nil
 }
 
@@ -128,9 +122,12 @@ func (m MCPServer) validate() error {
 			return fmt.Errorf("stdio transport requires command")
 		}
 	case "http":
-		if m.URL == "" {
-			return fmt.Errorf("http transport requires url")
-		}
+		// Ground rule 3 (fail at load time, not use time): building an
+		// engine used to accept this at config-validation time and only
+		// reject it later, in agent.Build, once a run tried to actually
+		// connect — see docs/DESIGN.md. Reject it here instead, so a typo'd
+		// or aspirational "transport: http" fails immediately.
+		return fmt.Errorf("transport \"http\" is not yet supported (only \"stdio\" is)")
 	case "":
 		return fmt.Errorf("transport is required")
 	default:

@@ -20,8 +20,8 @@ import (
 // values, the same way the bubbletea runtime would, but without a real
 // terminal — bubbletea models are plain value types with no hidden global
 // state, so this is a faithful and fast way to exercise the REPL's control
-// flow (PLAN.md section 11's fixture-driven testing approach applied to a
-// TUI instead of the run loop).
+// flow (docs/DESIGN.md section 11's fixture-driven testing approach applied
+// to a TUI instead of the run loop).
 
 type scriptedProvider struct {
 	responses []*provider.Response

@@ -83,10 +83,12 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		maxTurns = defaultMaxTurns
 	}
 
-	// cfg.Approvals.Timeout is already validated as a parseable duration
-	// string by config.Parse, so a parse error here can't happen in
-	// practice; treat it as "no timeout" rather than failing the build.
+	// cfg.Approvals.Timeout and cfg.Limits.Timeout are already validated
+	// as parseable duration strings by config.Parse, so a parse error
+	// here can't happen in practice; treat either as "no timeout" rather
+	// than failing the build.
 	timeout, _ := time.ParseDuration(cfg.Approvals.Timeout)
+	runTimeout, _ := time.ParseDuration(cfg.Limits.Timeout)
 
 	outputPolicy, systemSuffix, err := compileOutputPolicy(cfg, prov)
 	if err != nil {
@@ -109,6 +111,7 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		},
 		Output:     outputPolicy,
 		ToolPolicy: toolPolicy(cfg.ToolPolicy),
+		RunTimeout: runTimeout,
 	})
 
 	tools, err := ResolveTools(ctx, registry, cfg)

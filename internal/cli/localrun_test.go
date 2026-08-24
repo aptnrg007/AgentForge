@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agentforge/internal/agent"
@@ -100,6 +101,50 @@ func TestBuildEngineFromStoreDrivesToCompletion(t *testing.T) {
 	}
 }
 
+// TestDriveLocalRunCancelledContextStopsCleanly reproduces what a real
+// Ctrl-C during `agentforge run` does now that main.go wires ctx to
+// SIGINT/SIGTERM: driveLocalRun sees ctx already done and must reach
+// StateCancelled — not leave the run stuck in ready_for_model with a
+// bare "context canceled" propagated to the caller. This is the fast
+// pre-Step check (ctx dead before driveLocalRun's loop ever calls Step);
+// internal/runtime's TestStepModelCancelledContextPersistsCancelled
+// covers the other half — ctx dying mid-provider-call.
+func TestDriveLocalRunCancelledContextStopsCleanly(t *testing.T) {
+	ctx := context.Background()
+	st := newLocalRunTestStore(t)
+	seedRun(t, ctx, st, "run-cancel")
+
+	sp := &scriptedProvider{responses: []*provider.Response{textResponse("should never be reached")}}
+	registry := newTestRegistry()
+	defer registry.Close()
+
+	eng, run, _, err := buildEngineFromStore(ctx, st, registry, "run-cancel", fakeProviderFactory(sp))
+	if err != nil {
+		t.Fatalf("buildEngineFromStore: %v", err)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	err = driveLocalRun(cancelledCtx, st, eng, run.ID, outputOptions{}, false)
+	if err == nil {
+		t.Fatal("expected driveLocalRun to return an error for a cancelled run")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("expected the error to say the run was cancelled, got: %v", err)
+	}
+
+	// Confirmed on a fresh, live context — proving the state actually
+	// persisted rather than just trusting driveLocalRun's return value.
+	got, err := st.GetRun(ctx, "run-cancel")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.State != string(runtime.StateCancelled) {
+		t.Fatalf("persisted state = %s, want cancelled", got.State)
+	}
+}
+
 func TestBuildEngineFromStoreSurfacesPendingApprovalWithoutExecuting(t *testing.T) {
 	ctx := context.Background()
 	st := newLocalRunTestStore(t)
@@ -165,6 +210,41 @@ func TestBuildEngineFromStoreFailedRunReturnsError(t *testing.T) {
 
 	if err := driveLocalRun(ctx, st, eng, run.ID, outputOptions{}, false); err == nil {
 		t.Fatal("expected driveLocalRun to return a non-nil error for a failed run")
+	}
+}
+
+// TestBuildEngineFromStoreRejectsPlaceholderAgent reproduces the resume
+// bug this test guards against: a run whose agent row was created by
+// Engine.NewRun's EnsureAgentExists (empty-YAML placeholder, to satisfy
+// runs.agent_name's foreign key) rather than a real UpsertAgent — every
+// current CLI path upserts real config first, so this can't happen via
+// `run`/`chat` today, but a direct runtime.Engine caller (a future SDK,
+// or a test) could hit it. Before the fix, this failed with
+// config.Parse("")'s "name is required", which reads like a corrupted
+// YAML file rather than what actually happened.
+func TestBuildEngineFromStoreRejectsPlaceholderAgent(t *testing.T) {
+	ctx := context.Background()
+	st := newLocalRunTestStore(t)
+
+	if err := st.EnsureAgentExists(ctx, "placeholder-agent"); err != nil {
+		t.Fatalf("EnsureAgentExists: %v", err)
+	}
+	if err := st.CreateRun(ctx, "run-placeholder", "placeholder-agent", string(runtime.StateReadyForModel)); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := st.AppendMessage(ctx, "run-placeholder", message.Text(message.RoleUser, "go")); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	registry := newTestRegistry()
+	defer registry.Close()
+
+	_, _, _, err := buildEngineFromStore(ctx, st, registry, "run-placeholder", fakeProviderFactory(&scriptedProvider{}))
+	if err == nil {
+		t.Fatal("expected buildEngineFromStore to reject a placeholder (empty-YAML) agent")
+	}
+	if !strings.Contains(err.Error(), "has no stored config") {
+		t.Fatalf("expected a clear \"has no stored config\" error, got: %v", err)
 	}
 }
 

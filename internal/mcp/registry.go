@@ -15,7 +15,7 @@ import (
 )
 
 // Registry supervises every MCP server a process talks to, deduplicating
-// identical configs to one shared subprocess (PLAN.md section 8: "one
+// identical configs to one shared subprocess (docs/DESIGN.md section 8: "one
 // long-lived process per unique server config, shared across agents and
 // runs").
 type Registry struct {

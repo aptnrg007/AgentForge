@@ -24,7 +24,7 @@ func NewOllama(baseURL string) *Ollama {
 	if baseURL == "" {
 		baseURL = defaultOllamaBaseURL
 	}
-	return &Ollama{BaseURL: strings.TrimSuffix(baseURL, "/"), Client: http.DefaultClient}
+	return &Ollama{BaseURL: strings.TrimSuffix(baseURL, "/"), Client: newHTTPClient()}
 }
 
 func (o *Ollama) Name() string { return "ollama" }

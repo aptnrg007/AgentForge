@@ -1,6 +1,6 @@
-// Package api implements the agentforge HTTP daemon described in PLAN.md
-// section 9. No auth in v0.1: bind to 127.0.0.1 and treat that as the
-// security boundary, same as the plan calls for.
+// Package api implements the agentforge HTTP daemon described in
+// docs/DESIGN.md section 9. No auth in v0.1: bind to 127.0.0.1 and treat
+// that as the security boundary.
 package api
 
 import (
@@ -49,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/runs/{id}", s.handleGetRun)
 	mux.HandleFunc("POST /v1/runs/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleResume)
+	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.handleCancel)
 	return mux
 }
 

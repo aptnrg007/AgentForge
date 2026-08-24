@@ -7,10 +7,43 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
+	"time"
 
 	"agentforge/internal/message"
 )
+
+// responseHeaderTimeout bounds how long a provider's HTTP client waits
+// for the *first* byte of a response — every provider used to construct
+// its client as http.DefaultClient, which has no timeout at all, so a
+// provider that accepted the connection and then never answered (a
+// misbehaving endpoint, a firewall silently dropping the response) hung
+// the run forever with no config knob to bound it, the same gap
+// limits.timeout exists to close at the run level. Deliberately NOT
+// http.Client.Timeout, which bounds the *entire* request including
+// reading the body: that would also cap how long a legitimately slow but
+// actively-producing streaming response (or a large local model's slow
+// non-streaming generation) is allowed to run, which is a real and
+// common case here, not an edge case — Ollama alone can take well over a
+// minute just to load a large model into memory before the first token.
+// A stalled-after-it-starts response is instead bounded by the run-level
+// deadline (limits.timeout, internal/runtime), which wraps ctx for the
+// call and aborts it via context cancellation like any other deadline.
+const responseHeaderTimeout = 2 * time.Minute
+
+// newHTTPClient returns the default *http.Client every provider
+// constructs unless a caller overrides the exported Client field
+// afterward (e.g. in tests, against an httptest.Server). A fresh
+// *http.Transport per client, not http.DefaultTransport, so this
+// timeout is scoped to LLM provider calls specifically and can't be
+// changed out from under this package by anything else in the process
+// that happens to also mutate http.DefaultTransport.
+func newHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	return &http.Client{Transport: transport}
+}
 
 // ToolDef describes a tool available to the model, in namespaced form
 // (e.g. "github.search").

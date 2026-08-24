@@ -12,6 +12,7 @@ import (
 
 	"agentforge/internal/agent"
 	"agentforge/internal/mcp"
+	"agentforge/internal/runtime"
 	"agentforge/internal/store"
 )
 
@@ -82,10 +83,19 @@ func newRunsCmd() *cobra.Command {
 	}
 	addOutputFlags(resume, &resumeOut)
 
+	cancel := &cobra.Command{
+		Use:   "cancel <run-id>",
+		Short: "Stop a non-terminal run immediately",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runsCancel(cmd.Context(), server, dbPath, args[0])
+		},
+	}
+
 	cmd := &cobra.Command{Use: "runs", Short: "Inspect and drive runs"}
 	cmd.PersistentFlags().StringVar(&server, "server", "", "daemon URL, e.g. http://localhost:8080 (defaults to the local --db store)")
 	cmd.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "path to the SQLite run store (used when --server is not set)")
-	cmd.AddCommand(list, get, approve, deny, resume)
+	cmd.AddCommand(list, get, approve, deny, resume, cancel)
 	return cmd
 }
 
@@ -244,4 +254,40 @@ func runsResume(ctx context.Context, server, dbPath, runID string, o outputOptio
 		return err
 	}
 	return driveLocalRun(ctx, st, eng, run.ID, o, cfg.Output.Schema != "")
+}
+
+// runsCancel stops a non-terminal run. Deliberately doesn't reconstruct a
+// real engine via buildEngineFromStore the way approve/deny/resume do —
+// runtime.Engine.Cancel only ever touches persisted run state
+// (store.GetRun/UpdateRun), never the provider or tools, so it doesn't
+// need one — and a stuck run behind a since-broken agent config (bad
+// YAML, a revoked API key) should still be cancellable; that's the whole
+// point of an escape hatch. Mirrors internal/api/handlers.go's
+// handleCancel, which makes the same call for the same reason.
+func runsCancel(ctx context.Context, server, dbPath, runID string) error {
+	if server != "" {
+		var result map[string]string
+		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/cancel", "application/json", nil, &result); err != nil {
+			return err
+		}
+		fmt.Printf("%s: %s\n", result["state"], runID)
+		return nil
+	}
+
+	if err := ensureDBDir(dbPath); err != nil {
+		return err
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	eng := runtime.NewEngine(st, nil, runtime.Config{})
+	state, err := eng.Cancel(ctx, runID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", state, runID)
+	return nil
 }

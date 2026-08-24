@@ -38,7 +38,7 @@ func NewGemini(apiKey, baseURL string) *Gemini {
 	if baseURL == "" {
 		baseURL = defaultGeminiBaseURL
 	}
-	return &Gemini{APIKey: apiKey, BaseURL: strings.TrimSuffix(baseURL, "/"), Client: http.DefaultClient}
+	return &Gemini{APIKey: apiKey, BaseURL: strings.TrimSuffix(baseURL, "/"), Client: newHTTPClient()}
 }
 
 func (g *Gemini) Name() string { return "gemini" }

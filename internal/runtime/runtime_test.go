@@ -14,8 +14,8 @@ import (
 )
 
 // fakeProvider replays a scripted sequence of responses, one per call. This
-// is the fixture-replay approach from PLAN.md section 11: deterministic,
-// fast, and independent of a live Ollama instance.
+// is the fixture-replay approach from docs/DESIGN.md section 11:
+// deterministic, fast, and independent of a live Ollama instance.
 type fakeProvider struct {
 	responses []*provider.Response
 	calls     int

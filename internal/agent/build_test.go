@@ -299,6 +299,56 @@ func TestBuildWiresToolPolicyTimeout(t *testing.T) {
 	}
 }
 
+// TestBuildWiresLimitsTimeout proves the config -> agent.Build ->
+// runtime.Engine wiring for limits.timeout actually connects, the same
+// way TestBuildWiresToolPolicyTimeout does for tool_policy.timeout — a
+// real run-level deadline, not just a struct field copied around
+// untested. Reuses newBlockingTool: with no tool_policy configured at
+// all, only the run-level deadline is what can possibly stop it.
+func TestBuildWiresLimitsTimeout(t *testing.T) {
+	st, registry := newTestStoreAndRegistry(t)
+	cfg := &config.Config{
+		Name:   "a",
+		Model:  config.ModelConfig{Provider: "ollama", Name: "m"},
+		Limits: config.LimitsConfig{Timeout: "20ms"},
+	}
+	sp := &scriptedProvider{responses: []*provider.Response{
+		{Content: []message.ContentBlock{{Type: message.BlockToolUse, ID: "call_1", Name: "hang.tool", Input: json.RawMessage(`{}`)}}, StopReason: "tool_use"},
+	}}
+	eng, err := Build(context.Background(), st, registry, cfg, fakeFactory(sp))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	eng.RegisterTool(newBlockingTool("hang.tool"))
+
+	ctx := context.Background()
+	if err := eng.NewRun(ctx, "run-1", "go"); err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	var state runtime.State
+	for i := 0; i < 10; i++ {
+		state, err = eng.Step(ctx, "run-1")
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if state == runtime.StateCompleted || state == runtime.StateFailed || state == runtime.StateCancelled {
+			break
+		}
+	}
+	if state != runtime.StateFailed {
+		run, _ := st.GetRun(ctx, "run-1")
+		t.Fatalf("expected the wired run timeout to fail the run, got %s (error=%v)", state, run.Error)
+	}
+
+	run, err := st.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "exceeded its time limit") {
+		t.Fatalf("run.Error = %v, want it to mention the time limit", run.Error)
+	}
+}
+
 // TestBuildWiresToolPolicyOverrideOrdering proves Build preserves the
 // config's override order end to end: two overrides that both match the
 // same tool must resolve to the first one, exactly as toolPolicy() and

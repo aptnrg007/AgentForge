@@ -24,8 +24,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateAgent creates or updates an agent from a raw YAML body. The
 // agent's name comes from the YAML's own `name:` field, not the URL, per
-// PLAN.md section 9. The YAML is fully parsed and validated before it's
-// persisted, so a bad config never reaches the store.
+// docs/DESIGN.md section 9. The YAML is fully parsed and validated before
+// it's persisted, so a bad config never reaches the store.
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 	if err != nil {
@@ -115,7 +115,7 @@ func (s *Server) handleAgentTools(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRunAgent runs the agent synchronously, stepping the engine until it
-// hits a terminal state or awaiting_approval (PLAN.md section 9).
+// hits a terminal state or awaiting_approval (docs/DESIGN.md section 9).
 func (s *Server) handleRunAgent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
@@ -191,8 +191,8 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No auth/identity in v0.1 (PLAN.md section 9), so there's no real
-	// "who" to record beyond "came in over the API".
+	// No auth/identity in v0.1 (docs/DESIGN.md section 9), so there's no
+	// real "who" to record beyond "came in over the API".
 	state, err := eng.RecordApproval(ctx, run.ID, req.CallID, req.Decision, "api", req.Reason)
 	if err != nil {
 		writeStoreError(w, err)
@@ -228,10 +228,34 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resp)
 }
 
+// handleCancel stops a non-terminal run immediately. Deliberately doesn't
+// go through buildEngineForRun the way approve/resume do: Engine.Cancel
+// only touches persisted run state (store.GetRun/UpdateRun), never the
+// provider or tools, so it doesn't need a real one — and building one
+// anyway would mean a run stuck behind a since-broken agent config (a
+// revoked API key, a YAML edit that no longer parses) couldn't be
+// cancelled either, which defeats the point of an escape hatch.
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	runID := r.PathValue("id")
+
+	eng := runtime.NewEngine(s.store, nil, runtime.Config{})
+	state, err := eng.Cancel(ctx, runID)
+	if err != nil {
+		if errors.Is(err, runtime.ErrAlreadyTerminal) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"run_id": runID, "state": string(state)})
+}
+
 // buildEngineForRun reconstructs the engine that owns runID from its
 // agent's persisted config — consistent with the state machine's design
-// (PLAN.md ground rule 1): nothing about a run lives only in memory, so any
-// handler can pick it back up from the store alone.
+// (docs/DESIGN.md ground rule 1): nothing about a run lives only in memory,
+// so any handler can pick it back up from the store alone.
 func (s *Server) buildEngineForRun(ctx context.Context, runID string) (*runtime.Engine, *store.Run, error) {
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
@@ -240,6 +264,17 @@ func (s *Server) buildEngineForRun(ctx context.Context, runID string) (*runtime.
 	ag, err := s.store.GetAgent(ctx, run.AgentName)
 	if err != nil {
 		return nil, nil, err
+	}
+	if ag.YAML == "" {
+		// Engine.NewRun's EnsureAgentExists inserts a placeholder row (empty
+		// YAML) to satisfy runs.agent_name's foreign key when a run starts
+		// for an agent that was never registered via UpsertAgent — every
+		// current caller (cli run/chat, this API's POST /v1/agents/run
+		// flow) upserts real config first, so this shouldn't happen in
+		// practice, but a config.Parse("") failure ("name is required")
+		// would otherwise look like a corrupted YAML file rather than what
+		// it actually is: this agent has no stored config to resume from.
+		return nil, nil, fmt.Errorf("agent %q has no stored config (run %s cannot be resumed)", run.AgentName, run.ID)
 	}
 	cfg, err := config.Parse([]byte(ag.YAML))
 	if err != nil {
@@ -286,6 +321,22 @@ func (s *Server) buildRunResponse(ctx context.Context, runID string, state runti
 // needs a human decision.
 func driveToStopPoint(ctx context.Context, eng *runtime.Engine, runID string) (runtime.State, error) {
 	for {
+		// A client disconnect cancels r.Context() mid-run — end the run
+		// rather than calling Step with a ctx already known to be dead
+		// (which would just fail at its own GetRun for the same reason)
+		// and leaving it stuck non-terminal with no one left to read the
+		// response anyway. See runtime.Engine.EndIfContextDone and
+		// internal/cli/localrun.go's matching check.
+		if ctx.Err() != nil {
+			if state := eng.EndIfContextDone(ctx, runID); state != "" {
+				return state, ctx.Err()
+			}
+			return "", ctx.Err()
+		}
+
+		// Step self-heals a ctx that dies *during* this call (see its own
+		// dead-ctx recovery), so a non-nil error here is a real failure,
+		// not a run left stranded non-terminal.
 		state, err := eng.Step(ctx, runID)
 		if err != nil {
 			return "", err

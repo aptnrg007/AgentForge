@@ -32,6 +32,16 @@ func buildEngineFromStore(ctx context.Context, st *store.Store, registry *mcp.Re
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if ag.YAML == "" {
+		// See the matching check in internal/api/handlers.go
+		// buildEngineForRun: this run's agent row is a placeholder
+		// (EnsureAgentExists) rather than real config, which shouldn't
+		// happen via any current CLI path — `run`/`chat` upsert real YAML
+		// before starting a run — but a bare config.Parse("") failure
+		// ("name is required") would misleadingly look like the stored
+		// YAML itself is broken.
+		return nil, nil, nil, fmt.Errorf("agent %q has no stored config (run %s cannot be resumed)", run.AgentName, runID)
+	}
 	cfg, err := config.Parse([]byte(ag.YAML))
 	if err != nil {
 		return nil, nil, nil, err
@@ -55,6 +65,26 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 	start := time.Now()
 
 	for {
+		// A fast exit on Ctrl-C (main.go's signal-derived ctx) instead of
+		// calling Step with a ctx already known to be dead — Step would
+		// just fail at its own GetRun for the same reason. Reported
+		// directly here rather than through the switch below, which reads
+		// the run's trace using this same (dead) ctx to build the full
+		// emitOutcome payload; there's nothing new to report beyond "it
+		// stopped and why" in this case anyway — `runs get <id>` can
+		// inspect the rest afterward with a live context.
+		if ctx.Err() != nil {
+			switch eng.EndIfContextDone(ctx, runID) {
+			case runtime.StateFailed:
+				return fmt.Errorf("run %s failed: %s", runID, ctx.Err())
+			default: // StateCancelled, or "" if even EndIfContextDone couldn't tell
+				return fmt.Errorf("run %s was cancelled", runID)
+			}
+		}
+
+		// Step self-heals a ctx that dies *during* this call (see its own
+		// dead-ctx recovery), so a non-nil error here is a real failure,
+		// not a run left stranded non-terminal.
 		state, err := eng.Step(ctx, runID)
 		if err != nil {
 			return err
@@ -113,12 +143,20 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 }
 
 // emitOutcome resolves --output's target (stdout or a file) and writes
-// res to it in the requested format, closing the target afterward.
-func emitOutcome(o outputOptions, res runResult) error {
+// res to it in the requested format, closing the target afterward. A
+// --output file's Close error is checked (not just deferred and dropped):
+// a full disk can make the write look like it succeeded and only surface
+// on flush, and silently producing a truncated JSON envelope for a script
+// to consume is worse than a clear error.
+func emitOutcome(o outputOptions, res runResult) (err error) {
 	w, closeW, err := outputTarget(o)
 	if err != nil {
 		return err
 	}
-	defer closeW()
+	defer func() {
+		if cerr := closeW(); cerr != nil && err == nil {
+			err = fmt.Errorf("write --output %s: %w", o.path, cerr)
+		}
+	}()
 	return emitRunResult(w, o, res)
 }

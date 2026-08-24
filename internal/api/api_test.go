@@ -19,6 +19,7 @@ import (
 	"agentforge/internal/mcp"
 	"agentforge/internal/message"
 	"agentforge/internal/provider"
+	"agentforge/internal/runtime"
 	"agentforge/internal/store"
 )
 
@@ -476,6 +477,203 @@ func TestApproveUnknownCallReturnsConflict(t *testing.T) {
 	defer aResp.Body.Close()
 	if aResp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", aResp.StatusCode)
+	}
+}
+
+// TestBuildEngineForRunRejectsPlaceholderAgent mirrors
+// internal/cli's TestBuildEngineFromStoreRejectsPlaceholderAgent: a run
+// whose agent row is Engine.NewRun's empty-YAML placeholder
+// (EnsureAgentExists), not a real UpsertAgent — every current API path
+// upserts real config via POST /v1/agents before a run can start, so this
+// can't happen through the HTTP surface today, but buildEngineForRun is
+// the same reconstruction path a future direct-Engine caller would hit.
+// Exercises buildEngineForRun directly rather than through the HTTP
+// handler, same as the store/registry setup newTestServer normally hides.
+func TestBuildEngineForRunRejectsPlaceholderAgent(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	registry := mcp.NewRegistry(discardLogger())
+	t.Cleanup(func() { registry.Close() })
+	srv := &Server{store: st, registry: registry, logger: discardLogger(), providerFactory: fakeProviderFactory()}
+
+	if err := st.EnsureAgentExists(ctx, "placeholder-agent"); err != nil {
+		t.Fatalf("EnsureAgentExists: %v", err)
+	}
+	if err := st.CreateRun(ctx, "run-placeholder", "placeholder-agent", string(runtime.StateReadyForModel)); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := st.AppendMessage(ctx, "run-placeholder", message.Text(message.RoleUser, "go")); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	_, _, err = srv.buildEngineForRun(ctx, "run-placeholder")
+	if err == nil {
+		t.Fatal("expected buildEngineForRun to reject a placeholder (empty-YAML) agent")
+	}
+	if !strings.Contains(err.Error(), "has no stored config") {
+		t.Fatalf("expected a clear \"has no stored config\" error, got: %v", err)
+	}
+}
+
+// TestDriveToStopPointCancelledContextPersistsCancelled is
+// driveToStopPoint's half of the ctx-cancellation coverage —
+// internal/cli's TestDriveLocalRunCancelledContextStopsCleanly covers the
+// CLI drive loop, this one covers the HTTP daemon's. A client disconnect
+// cancels r.Context() the same way Ctrl-C cancels the CLI's ctx, and
+// should leave the run at StateCancelled instead of stuck non-terminal.
+func TestDriveToStopPointCancelledContextPersistsCancelled(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	registry := mcp.NewRegistry(discardLogger())
+	t.Cleanup(func() { registry.Close() })
+	srv := &Server{store: st, registry: registry, logger: discardLogger(), providerFactory: fakeProviderFactory(textResponse("should never be reached"))}
+
+	if err := st.UpsertAgent(ctx, "minimal", minimalYAML); err != nil {
+		t.Fatalf("UpsertAgent: %v", err)
+	}
+	if err := st.CreateRun(ctx, "run-cancel", "minimal", string(runtime.StateReadyForModel)); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := st.AppendMessage(ctx, "run-cancel", message.Text(message.RoleUser, "go")); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	eng, run, err := srv.buildEngineForRun(ctx, "run-cancel")
+	if err != nil {
+		t.Fatalf("buildEngineForRun: %v", err)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := driveToStopPoint(cancelledCtx, eng, run.ID); err == nil {
+		t.Fatal("expected driveToStopPoint to return an error for a cancelled ctx")
+	}
+
+	got, err := st.GetRun(ctx, "run-cancel")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.State != string(runtime.StateCancelled) {
+		t.Fatalf("persisted state = %s, want cancelled", got.State)
+	}
+}
+
+// TestCancelStopsAwaitingApprovalRun exercises POST /v1/runs/{id}/cancel
+// through real HTTP, on a run genuinely stuck at a stop point (paused for
+// approval) rather than one already terminal by the time the request
+// lands — handleRunAgent drives synchronously to the next stop point, so
+// a run with no pending approval would already be completed before there
+// was anything to cancel.
+func TestCancelStopsAwaitingApprovalRun(t *testing.T) {
+	requireNpx(t)
+	ts := newTestServer(t, fakeProviderFactory(
+		toolUseResponse("call_1", "everything.echo", `{"message":"gated"}`),
+	))
+	postAgent(t, ts, approvalsDemoYAML)
+
+	resp, err := http.Post(ts.URL+"/v1/agents/approvals-demo/run", "application/json", strings.NewReader(`{"message":"please echo"}`))
+	if err != nil {
+		t.Fatalf("POST run: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var runOut runResponse
+	if err := json.Unmarshal(body, &runOut); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, body)
+	}
+	if runOut.State != "awaiting_approval" {
+		t.Fatalf("precondition: state = %q, want awaiting_approval", runOut.State)
+	}
+
+	cResp, err := http.Post(ts.URL+"/v1/runs/"+runOut.RunID+"/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST cancel: %v", err)
+	}
+	defer cResp.Body.Close()
+	cBody, _ := io.ReadAll(cResp.Body)
+	if cResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST cancel: status %d, want 200: %s", cResp.StatusCode, cBody)
+	}
+	var cancelOut map[string]string
+	if err := json.Unmarshal(cBody, &cancelOut); err != nil {
+		t.Fatalf("decode cancel response: %v (body=%s)", err, cBody)
+	}
+	if cancelOut["state"] != "cancelled" {
+		t.Fatalf("state = %q, want cancelled", cancelOut["state"])
+	}
+
+	// GET /runs/{id} confirms it actually persisted, not just what the
+	// handler echoed back.
+	gResp, err := http.Get(ts.URL + "/v1/runs/" + runOut.RunID)
+	if err != nil {
+		t.Fatalf("GET run: %v", err)
+	}
+	defer gResp.Body.Close()
+	gBody, _ := io.ReadAll(gResp.Body)
+	var getOut runResponse
+	if err := json.Unmarshal(gBody, &getOut); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, gBody)
+	}
+	if getOut.State != "cancelled" {
+		t.Fatalf("persisted state = %q, want cancelled", getOut.State)
+	}
+}
+
+// TestCancelAlreadyCompletedReturnsConflict proves cancelling a run that
+// already finished is rejected (409, matching the status
+// TestApproveUnknownCallReturnsConflict gets for the analogous "nothing
+// left to decide" case) rather than silently succeeding and hiding the
+// run's real outcome.
+func TestCancelAlreadyCompletedReturnsConflict(t *testing.T) {
+	ts := newTestServer(t, fakeProviderFactory(textResponse("hello back")))
+	postAgent(t, ts, minimalYAML)
+
+	resp, err := http.Post(ts.URL+"/v1/agents/minimal/run", "application/json", strings.NewReader(`{"message":"hi"}`))
+	if err != nil {
+		t.Fatalf("POST run: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var runOut runResponse
+	if err := json.Unmarshal(body, &runOut); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, body)
+	}
+	if runOut.State != "completed" {
+		t.Fatalf("precondition: state = %q, want completed", runOut.State)
+	}
+
+	cResp, err := http.Post(ts.URL+"/v1/runs/"+runOut.RunID+"/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST cancel: %v", err)
+	}
+	defer cResp.Body.Close()
+	if cResp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", cResp.StatusCode)
+	}
+}
+
+// TestCancelUnknownRunReturns404 checks the not-found path specifically
+// because handleCancel builds its Engine directly (runtime.NewEngine)
+// instead of going through buildEngineForRun — it's worth confirming that
+// shortcut didn't also skip buildEngineForRun's usual 404 mapping.
+func TestCancelUnknownRunReturns404(t *testing.T) {
+	ts := newTestServer(t, fakeProviderFactory())
+	resp, err := http.Post(ts.URL+"/v1/runs/does-not-exist/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST cancel: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
 

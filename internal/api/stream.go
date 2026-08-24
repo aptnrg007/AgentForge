@@ -84,6 +84,21 @@ func (s *Server) handleStreamAgent(w http.ResponseWriter, r *http.Request) {
 // streaming existed.
 func (s *Server) streamRun(ctx context.Context, sse *sseWriter, eng *runtime.Engine, runID string) {
 	for {
+		// A client disconnect cancels ctx mid-run, the same way it would
+		// for the non-streaming handlers — see driveToStopPoint. Checked
+		// before Step, not just via sse.Err() below, since ctx can die
+		// during a store call that has no SSE write anywhere near it.
+		// Nothing left to report to either way — the client is gone — so
+		// the resulting state is discarded; this just makes sure the run
+		// still ends up terminal instead of stranded.
+		if ctx.Err() != nil {
+			eng.EndIfContextDone(ctx, runID)
+			return
+		}
+
+		// Step self-heals a ctx that dies *during* this call (see its own
+		// dead-ctx recovery), so a non-nil error here is a real failure,
+		// not a run left stranded non-terminal.
 		state, err := eng.Step(ctx, runID)
 		if err != nil {
 			errStr := err.Error()
