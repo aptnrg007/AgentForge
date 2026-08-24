@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -302,19 +301,9 @@ func (o *OpenAI) Complete(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("openai: read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openai: status %d: %s", resp.StatusCode, openAIErrorMessage(respBody))
-	}
-
 	var cr openAIChatResponse
-	if err := json.Unmarshal(respBody, &cr); err != nil {
-		return nil, fmt.Errorf("openai: decode response: %w", err)
+	if err := decodeResponse("openai", resp, openAIErrorMessage, &cr); err != nil {
+		return nil, err
 	}
 	if len(cr.Choices) == 0 {
 		return nil, fmt.Errorf("openai: response has no choices")
@@ -344,39 +333,10 @@ func (o *OpenAI) Stream(ctx context.Context, r Request) (Stream, error) {
 	}
 	return &openAIStream{
 		body:      resp.Body,
-		reader:    newOpenAISSEReader(resp.Body),
+		reader:    newSSEDataReader(resp.Body),
 		toolCalls: map[int]*openAIToolCallAccum{},
 	}, nil
 }
-
-// --- SSE framing ---
-
-// openAISSEReader reads "data: <json>" lines from a Chat Completions
-// streaming body. Unlike Anthropic's framing (anthropicSSEReader), there
-// is no event: field and no blank-line frame terminator — every line
-// that matters is self-contained, so this only has to filter for the
-// data: prefix.
-type openAISSEReader struct {
-	scanner *bufio.Scanner
-}
-
-func newOpenAISSEReader(body io.Reader) *openAISSEReader {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	return &openAISSEReader{scanner: scanner}
-}
-
-func (r *openAISSEReader) next() ([]byte, bool) {
-	for r.scanner.Scan() {
-		line := r.scanner.Text()
-		if data, ok := strings.CutPrefix(line, "data: "); ok {
-			return []byte(data), true
-		}
-	}
-	return nil, false
-}
-
-func (r *openAISSEReader) err() error { return r.scanner.Err() }
 
 // --- stream assembly ---
 
@@ -407,7 +367,7 @@ type openAIToolCallAccum struct {
 
 type openAIStream struct {
 	body   io.ReadCloser
-	reader *openAISSEReader
+	reader *sseDataReader
 
 	text      strings.Builder
 	toolCalls map[int]*openAIToolCallAccum

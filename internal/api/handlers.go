@@ -154,7 +154,7 @@ func (s *Server) handleRunAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := driveToStopPoint(ctx, eng, runID)
+	state, err := eng.Run(ctx, runID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -214,7 +214,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := driveToStopPoint(ctx, eng, run.ID)
+	state, err := eng.Run(ctx, run.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -315,37 +315,6 @@ func (s *Server) buildRunResponse(ctx context.Context, runID string, state runti
 	}
 
 	return resp, status, nil
-}
-
-// driveToStopPoint steps the engine until it reaches a terminal state or
-// needs a human decision.
-func driveToStopPoint(ctx context.Context, eng *runtime.Engine, runID string) (runtime.State, error) {
-	for {
-		// A client disconnect cancels r.Context() mid-run — end the run
-		// rather than calling Step with a ctx already known to be dead
-		// (which would just fail at its own GetRun for the same reason)
-		// and leaving it stuck non-terminal with no one left to read the
-		// response anyway. See runtime.Engine.EndIfContextDone and
-		// internal/cli/localrun.go's matching check.
-		if ctx.Err() != nil {
-			if state := eng.EndIfContextDone(ctx, runID); state != "" {
-				return state, ctx.Err()
-			}
-			return "", ctx.Err()
-		}
-
-		// Step self-heals a ctx that dies *during* this call (see its own
-		// dead-ctx recovery), so a non-nil error here is a real failure,
-		// not a run left stranded non-terminal.
-		state, err := eng.Step(ctx, runID)
-		if err != nil {
-			return "", err
-		}
-		switch state {
-		case runtime.StateCompleted, runtime.StateFailed, runtime.StateCancelled, runtime.StateAwaitingApproval:
-			return state, nil
-		}
-	}
 }
 
 // handleListRuns returns runs most-recent-first, optionally filtered to

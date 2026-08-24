@@ -519,13 +519,14 @@ func TestBuildEngineForRunRejectsPlaceholderAgent(t *testing.T) {
 	}
 }
 
-// TestDriveToStopPointCancelledContextPersistsCancelled is
-// driveToStopPoint's half of the ctx-cancellation coverage —
-// internal/cli's TestDriveLocalRunCancelledContextStopsCleanly covers the
-// CLI drive loop, this one covers the HTTP daemon's. A client disconnect
-// cancels r.Context() the same way Ctrl-C cancels the CLI's ctx, and
-// should leave the run at StateCancelled instead of stuck non-terminal.
-func TestDriveToStopPointCancelledContextPersistsCancelled(t *testing.T) {
+// TestEngineRunCancelledContextPersistsCancelled exercises
+// runtime.Engine.Run (which handleRunAgent/handleResume call directly) as
+// the HTTP daemon actually uses it — internal/cli's
+// TestDriveLocalRunCancelledContextStopsCleanly covers the same scenario
+// for the CLI drive loop. A client disconnect cancels r.Context() the
+// same way Ctrl-C cancels the CLI's ctx, and should leave the run at
+// StateCancelled instead of stuck non-terminal.
+func TestEngineRunCancelledContextPersistsCancelled(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -554,8 +555,8 @@ func TestDriveToStopPointCancelledContextPersistsCancelled(t *testing.T) {
 	cancelledCtx, cancel := context.WithCancel(ctx)
 	cancel()
 
-	if _, err := driveToStopPoint(cancelledCtx, eng, run.ID); err == nil {
-		t.Fatal("expected driveToStopPoint to return an error for a cancelled ctx")
+	if _, err := eng.Run(cancelledCtx, run.ID); err == nil {
+		t.Fatal("expected eng.Run to return an error for a cancelled ctx")
 	}
 
 	got, err := st.GetRun(ctx, "run-cancel")

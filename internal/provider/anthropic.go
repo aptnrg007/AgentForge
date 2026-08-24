@@ -297,19 +297,9 @@ func (a *Anthropic) Complete(ctx context.Context, r Request) (*Response, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic: status %d: %s", resp.StatusCode, anthropicErrorMessage(respBody))
-	}
-
 	var ar anthropicResponse
-	if err := json.Unmarshal(respBody, &ar); err != nil {
-		return nil, fmt.Errorf("anthropic: decode response: %w", err)
+	if err := decodeResponse("anthropic", resp, anthropicErrorMessage, &ar); err != nil {
+		return nil, err
 	}
 
 	return &Response{

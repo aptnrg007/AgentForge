@@ -184,19 +184,11 @@ func ollamaFormat(r Request) json.RawMessage {
 	return r.ResponseSchema
 }
 
-func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
-	body := ollamaChatRequest{
-		Model:    r.Model,
-		Messages: toOllamaMessages(r.System, r.Messages),
-		Tools:    toOllamaTools(r.Tools),
-		Stream:   false,
-		Options: ollamaOptions{
-			Temperature: r.Temperature,
-			NumPredict:  r.MaxTokens,
-		},
-		Format: ollamaFormat(r),
-	}
-
+// doRequest marshals body and POSTs it to /api/chat, shared by Complete
+// (Stream: false) and Stream (Stream: true) below — everything about the
+// request is identical except that one field and what each does with the
+// response afterward.
+func (o *Ollama) doRequest(ctx context.Context, body ollamaChatRequest) (*http.Response, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: marshal request: %w", err)
@@ -212,20 +204,34 @@ func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ollama: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	return resp, nil
+}
 
-	respBody, err := io.ReadAll(resp.Body)
+// ollamaErrorMessage is Ollama's error body as-is: unlike the other three
+// providers, it isn't a structured {"error": "..."} JSON envelope worth
+// parsing out, just plain text.
+func ollamaErrorMessage(body []byte) string { return string(body) }
+
+func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
+	body := ollamaChatRequest{
+		Model:    r.Model,
+		Messages: toOllamaMessages(r.System, r.Messages),
+		Tools:    toOllamaTools(r.Tools),
+		Stream:   false,
+		Options: ollamaOptions{
+			Temperature: r.Temperature,
+			NumPredict:  r.MaxTokens,
+		},
+		Format: ollamaFormat(r),
+	}
+
+	resp, err := o.doRequest(ctx, body)
 	if err != nil {
-		return nil, fmt.Errorf("ollama: read response: %w", err)
+		return nil, err
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama: status %d: %s", resp.StatusCode, string(respBody))
-	}
-
 	var chatResp ollamaChatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return nil, fmt.Errorf("ollama: decode response: %w", err)
+	if err := decodeResponse("ollama", resp, ollamaErrorMessage, &chatResp); err != nil {
+		return nil, err
 	}
 
 	blocks := fromOllamaMessage(chatResp.Message)
@@ -259,26 +265,15 @@ func (o *Ollama) Stream(ctx context.Context, r Request) (Stream, error) {
 		Format: ollamaFormat(r),
 	}
 
-	payload, err := json.Marshal(body)
+	resp, err := o.doRequest(ctx, body)
 	if err != nil {
-		return nil, fmt.Errorf("ollama: marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/api/chat", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("ollama: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := o.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama: request failed: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ollama: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("ollama: status %d: %s", resp.StatusCode, ollamaErrorMessage(respBody))
 	}
 
 	// json.Decoder, not bufio.Scanner: Scanner's default line-length cap

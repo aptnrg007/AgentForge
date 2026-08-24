@@ -64,82 +64,75 @@ func buildEngineFromStore(ctx context.Context, st *store.Store, registry *mcp.Re
 func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, runID string, o outputOptions, schemaSet bool) error {
 	start := time.Now()
 
-	for {
-		// A fast exit on Ctrl-C (main.go's signal-derived ctx) instead of
-		// calling Step with a ctx already known to be dead — Step would
-		// just fail at its own GetRun for the same reason. Reported
-		// directly here rather than through the switch below, which reads
-		// the run's trace using this same (dead) ctx to build the full
-		// emitOutcome payload; there's nothing new to report beyond "it
-		// stopped and why" in this case anyway — `runs get <id>` can
-		// inspect the rest afterward with a live context.
+	state, err := eng.Run(ctx, runID)
+	if err != nil {
 		if ctx.Err() != nil {
-			switch eng.EndIfContextDone(ctx, runID) {
-			case runtime.StateFailed:
+			// eng.Run hit a dead ctx (Ctrl-C via main.go's signal-derived
+			// ctx, or limits.timeout) rather than a genuine failure —
+			// state is whatever EndIfContextDone determined the run ended
+			// up in. Reported directly here rather than through the
+			// switch below, which would read the run's trace using this
+			// same (dead) ctx to build the full emitOutcome payload;
+			// there's nothing new to report beyond "it stopped and why"
+			// in this case anyway — `runs get <id>` can inspect the rest
+			// afterward with a live context.
+			if state == runtime.StateFailed {
 				return fmt.Errorf("run %s failed: %s", runID, ctx.Err())
-			default: // StateCancelled, or "" if even EndIfContextDone couldn't tell
-				return fmt.Errorf("run %s was cancelled", runID)
 			}
+			return fmt.Errorf("run %s was cancelled", runID) // StateCancelled, or "" if even EndIfContextDone couldn't tell
 		}
+		return err
+	}
 
-		// Step self-heals a ctx that dies *during* this call (see its own
-		// dead-ctx recovery), so a non-nil error here is a real failure,
-		// not a run left stranded non-terminal.
-		state, err := eng.Step(ctx, runID)
+	switch state {
+	case runtime.StateAwaitingApproval:
+		pending, err := st.ListPendingApprovals(ctx, runID)
 		if err != nil {
 			return err
 		}
-
-		switch state {
-		case runtime.StateAwaitingApproval:
-			pending, err := st.ListPendingApprovals(ctx, runID)
-			if err != nil {
-				return err
-			}
-			pendingRows := make([]remotePendingCall, len(pending))
-			for i, tc := range pending {
-				pendingRows[i] = remotePendingCall{CallID: tc.ID, Tool: tc.ToolName, Args: []byte(tc.ArgsJSON)}
-			}
-			return emitOutcome(o, runResult{
-				RunID: runID, State: string(state), Pending: pendingRows,
-				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
-			})
-
-		case runtime.StateCompleted:
-			msgs, err := st.ListMessages(ctx, runID)
-			if err != nil {
-				return err
-			}
-			return emitOutcome(o, runResult{
-				RunID: runID, State: string(state), Messages: msgs,
-				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
-			})
-
-		case runtime.StateFailed:
-			msgs, mErr := st.ListMessages(ctx, runID)
-			run, gErr := st.GetRun(ctx, runID)
-			if gErr != nil {
-				return gErr
-			}
-			errStr := "unknown error"
-			if run.Error != nil {
-				errStr = *run.Error
-			}
-			if mErr == nil {
-				if err := emitOutcome(o, runResult{
-					RunID: runID, State: string(state), Messages: msgs, Error: &errStr,
-					DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
-				}); err != nil {
-					return err
-				}
-			}
-			return fmt.Errorf("run %s failed: %s", runID, errStr)
-
-		case runtime.StateCancelled:
-			return fmt.Errorf("run %s was cancelled", runID)
+		pendingRows := make([]remotePendingCall, len(pending))
+		for i, tc := range pending {
+			pendingRows[i] = remotePendingCall{CallID: tc.ID, Tool: tc.ToolName, Args: []byte(tc.ArgsJSON)}
 		}
-		// ready_for_model / ready_for_tools: keep stepping.
+		return emitOutcome(o, runResult{
+			RunID: runID, State: string(state), Pending: pendingRows,
+			DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+		})
+
+	case runtime.StateCompleted:
+		msgs, err := st.ListMessages(ctx, runID)
+		if err != nil {
+			return err
+		}
+		return emitOutcome(o, runResult{
+			RunID: runID, State: string(state), Messages: msgs,
+			DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+		})
+
+	case runtime.StateFailed:
+		msgs, mErr := st.ListMessages(ctx, runID)
+		run, gErr := st.GetRun(ctx, runID)
+		if gErr != nil {
+			return gErr
+		}
+		errStr := "unknown error"
+		if run.Error != nil {
+			errStr = *run.Error
+		}
+		if mErr == nil {
+			if err := emitOutcome(o, runResult{
+				RunID: runID, State: string(state), Messages: msgs, Error: &errStr,
+				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+			}); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("run %s failed: %s", runID, errStr)
+
+	case runtime.StateCancelled:
+		return fmt.Errorf("run %s was cancelled", runID)
 	}
+	return fmt.Errorf("run %s: unexpected state %q", runID, state)
 }
 
 // emitOutcome resolves --output's target (stdout or a file) and writes

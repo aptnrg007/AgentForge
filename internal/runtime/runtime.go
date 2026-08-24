@@ -552,6 +552,50 @@ func (e *Engine) EndIfContextDone(ctx context.Context, runID string) State {
 	return finalState
 }
 
+// Run steps runID until it reaches a stop point — completed, failed,
+// cancelled, or awaiting_approval — and returns the state it stopped at.
+// This is the shared core of what used to be three near-identical drive
+// loops (internal/cli/localrun.go, internal/api/handlers.go,
+// internal/api/stream.go): check ctx before every Step (so a
+// already-dead ctx doesn't get handed to Step just to fail at its own
+// GetRun for the same reason — see EndIfContextDone), call Step, and
+// stop at the first state worth reporting back to a caller.
+//
+// Two error shapes: a non-nil error with ctx.Err() also non-nil means
+// the run ended (or was already ending) because ctx died — state is
+// StateFailed or StateCancelled (whichever EndIfContextDone determined),
+// or "" if even that couldn't tell. A non-nil error with ctx.Err() nil
+// is a genuine failure — the store, or something Step couldn't recover
+// from — and state is always "" in that case.
+//
+// internal/api/stream.go's streamRun deliberately does NOT use this: it
+// needs to notice a disconnected SSE client (via a failed write, not
+// ctx.Err()) between iterations, which this loop has no way to plug in
+// without taking on API-specific concerns.
+func (e *Engine) Run(ctx context.Context, runID string) (State, error) {
+	for {
+		if ctx.Err() != nil {
+			if state := e.EndIfContextDone(ctx, runID); state != "" {
+				return state, ctx.Err()
+			}
+			return "", ctx.Err()
+		}
+
+		// Step self-heals a ctx that dies *during* this call (see its own
+		// dead-ctx recovery), so a non-nil error here is a real failure,
+		// not a run left stranded non-terminal.
+		state, err := e.Step(ctx, runID)
+		if err != nil {
+			return "", err
+		}
+		switch state {
+		case StateCompleted, StateFailed, StateCancelled, StateAwaitingApproval:
+			return state, nil
+		}
+		// ready_for_model / ready_for_tools: keep stepping.
+	}
+}
+
 func (e *Engine) resolveAwaitingApproval(ctx context.Context, runID string) (State, error) {
 	run, err := e.store.GetRun(ctx, runID)
 	if err != nil {

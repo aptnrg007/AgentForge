@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -407,19 +406,9 @@ func (g *Gemini) Complete(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("gemini: read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini: status %d: %s", resp.StatusCode, geminiErrorMessage(respBody))
-	}
-
 	var gr geminiResponse
-	if err := json.Unmarshal(respBody, &gr); err != nil {
-		return nil, fmt.Errorf("gemini: decode response: %w", err)
+	if err := decodeResponse("gemini", resp, geminiErrorMessage, &gr); err != nil {
+		return nil, err
 	}
 	if len(gr.Candidates) == 0 {
 		return nil, fmt.Errorf("gemini: response has no candidates")
@@ -440,7 +429,7 @@ func (g *Gemini) Complete(ctx context.Context, r Request) (*Response, error) {
 // adapts Gemini's frame sequence onto the pull-based Stream interface.
 // Unlike Anthropic (event: + message_stop) or OpenAI (data: [DONE]),
 // Gemini's SSE stream carries no event: field and no terminal sentinel —
-// it simply ends at EOF, so geminiSSEReader and geminiStream both treat a
+// it simply ends at EOF, so sseDataReader and geminiStream both treat a
 // clean EOF as normal completion rather than an error.
 func (g *Gemini) Stream(ctx context.Context, r Request) (Stream, error) {
 	resp, err := g.doRequest(ctx, r.Model, "streamGenerateContent", g.buildRequest(r), true)
@@ -452,43 +441,14 @@ func (g *Gemini) Stream(ctx context.Context, r Request) (Stream, error) {
 		respBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("gemini: status %d: %s", resp.StatusCode, geminiErrorMessage(respBody))
 	}
-	return &geminiStream{body: resp.Body, reader: newGeminiSSEReader(resp.Body)}, nil
+	return &geminiStream{body: resp.Body, reader: newSSEDataReader(resp.Body)}, nil
 }
-
-// --- SSE framing ---
-
-// geminiSSEReader reads bare "data: <json>" lines from a
-// streamGenerateContent response body. There is no event: field to key
-// off (unlike anthropicSSEReader) and no blank-line frame terminator
-// (unlike either anthropicSSEReader or openAISSEReader's [DONE] line) —
-// every data: line is a complete, self-contained GenerateContentResponse.
-type geminiSSEReader struct {
-	scanner *bufio.Scanner
-}
-
-func newGeminiSSEReader(body io.Reader) *geminiSSEReader {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	return &geminiSSEReader{scanner: scanner}
-}
-
-func (r *geminiSSEReader) next() ([]byte, bool) {
-	for r.scanner.Scan() {
-		line := r.scanner.Text()
-		if data, ok := strings.CutPrefix(line, "data: "); ok {
-			return []byte(data), true
-		}
-	}
-	return nil, false
-}
-
-func (r *geminiSSEReader) err() error { return r.scanner.Err() }
 
 // --- stream assembly ---
 
 type geminiStream struct {
 	body   io.ReadCloser
-	reader *geminiSSEReader
+	reader *sseDataReader
 
 	text          strings.Builder
 	textSignature string
