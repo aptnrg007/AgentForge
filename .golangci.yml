@@ -1,0 +1,65 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose # every provider does raw net/http; an unclosed body is a real leak here
+    - unconvert
+    - unparam
+    - misspell
+  settings:
+    errcheck:
+      # This codebase has never run errcheck before, and defaulting to zero
+      # exclusions flags every idiomatic `defer st.Close()` and CLI
+      # `fmt.Fprintf(w, ...)` in the tree — hundreds of matches that aren't
+      # bugs. Exclude those two shapes explicitly rather than disabling the
+      # linter; a genuinely unchecked error elsewhere still fails the build.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (io.Closer).Close # covers resp.Body.Close and similar interface-typed closes
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        # (io.Closer).Close only matches a call through an io.Closer-typed
+        # value (e.g. resp.Body) — these are the same "ignore a cleanup
+        # Close on a read path" idiom, but called through a concrete type,
+        # so errcheck needs each one spelled out.
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*agentforge/internal/store.Store).Close
+        - (*agentforge/internal/mcp.Registry).Close
+        - (agentforge/internal/provider.Stream).Close
+
+  exclusions:
+    rules:
+      # Test helpers (toolUseResponse, pressKey, typeText, postRun, ...)
+      # keep a full, readable parameter list for future call sites even
+      # when every call site today happens to pass the same value —
+      # that's a deliberate test-helper shape, not a real "dead param".
+      - path: _test\.go
+        linters:
+          - unparam
+      # "modle" in internal/config/config_test.go is a deliberately
+      # misspelled config key used to test that Parse's unknown-key error
+      # names the actual typo, not prose that needs fixing.
+      - path: internal/config/config_test\.go
+        linters:
+          - misspell
+        text: "modle"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

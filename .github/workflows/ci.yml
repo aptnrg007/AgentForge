@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          check-latest: true
+
+      # internal/mcp and internal/api spawn real MCP servers over stdio via
+      # npx; those tests self-skip when npx isn't on PATH, but ubuntu-latest
+      # ships Node, so set it up explicitly rather than relying on the
+      # runner image's preinstalled version.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -v ./...
+
+      # --replay drives every case against a recorded fixture, not a
+      # live model, so this needs no API key — but examples/evals/
+      # weather.yaml's agent still makes real (free, keyless) calls to
+      # open-meteo.com to exercise its tools for real; only the model
+      # leg is faked. See internal/eval and docs/DESIGN.md section 12.
+      - name: Eval (replay)
+        run: go run ./cmd/agentforge eval examples/evals --root .
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          check-latest: true
+
+      # v7, not v6: the action's v7 line is the one that supports
+      # golangci-lint v2.x binaries (v6 targets v1.x). .golangci.yml uses
+      # the v2 config schema (`version: "2"`), which a v1.x binary can't
+      # even parse, and a v2 binary must be built with a Go toolchain >=
+      # this module's go.mod version.
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.1
