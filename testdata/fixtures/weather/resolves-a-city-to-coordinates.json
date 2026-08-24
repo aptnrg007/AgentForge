@@ -1,0 +1,41 @@
+{
+  "turns": [
+    {
+      "response": {
+        "Content": [
+          {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "geo.search",
+            "input": { "place": "Lisbon" }
+          }
+        ],
+        "StopReason": "tool_use",
+        "Usage": { "input_tokens": 120, "output_tokens": 24 }
+      }
+    },
+    {
+      "response": {
+        "Content": [
+          {
+            "type": "tool_use",
+            "id": "call_2",
+            "name": "weather.current",
+            "input": { "latitude": 38.72509, "longitude": -9.1498 }
+          }
+        ],
+        "StopReason": "tool_use",
+        "Usage": { "input_tokens": 180, "output_tokens": 30 }
+      }
+    },
+    {
+      "response": {
+        "Content": [
+          { "type": "text", "text": "It's currently mild in Lisbon, with clear to partly cloudy skies." }
+        ],
+        "StopReason": "end_turn",
+        "Usage": { "input_tokens": 220, "output_tokens": 20 }
+      }
+    }
+  ]
+}

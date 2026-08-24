@@ -1,0 +1,11 @@
+agent: ../weather-http.yaml
+
+cases:
+  - name: resolves a city to coordinates
+    input: "What's the weather in Lisbon?"
+    expect:
+      final_state: completed
+      tool_called: ["geo.search", "weather.current"]
+      output_contains: ["Lisbon"]
+      max_turns: 6
+      no_repairs: true

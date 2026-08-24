@@ -1,0 +1,10 @@
+agent: ../minimal.yaml
+
+cases:
+  - name: answers a simple question
+    input: "What is 2+2? Answer in one short sentence."
+    expect:
+      final_state: completed
+      output_contains: ["4"]
+      max_turns: 1
+      no_repairs: true

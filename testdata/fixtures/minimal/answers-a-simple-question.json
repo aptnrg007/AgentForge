@@ -1,0 +1,13 @@
+{
+  "turns": [
+    {
+      "response": {
+        "Content": [
+          { "type": "text", "text": "2 + 2 is 4." }
+        ],
+        "StopReason": "end_turn",
+        "Usage": { "input_tokens": 42, "output_tokens": 8 }
+      }
+    }
+  ]
+}

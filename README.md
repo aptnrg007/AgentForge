@@ -275,7 +275,47 @@ The `overrides:` shown above isn't hypothetical either — `examples/github-assi
 uses that exact `github.*`/`90s` override for real, because a GitHub API call is a slower
 round trip than the 30s default.
 
-`limits.timeout` is parsed and validated but not yet enforced — a separate, still-open gap.
+`limits.timeout` bounds the whole run, not just a single tool call: it's a deadline anchored to
+the run's creation time, checked by every `Step` call regardless of whether the run is currently
+waiting on the model or a tool. A run that outlives it ends `failed` with `run exceeded its time
+limit` (or `cancelled`, if the same deadline fired as an external cancellation instead) — either
+way the run always lands in a terminal state, never stranded.
+
+## Evals
+
+The reliability machinery above — repair loops, approval gates, tool-call retries —
+is only as credible as the evidence that it actually works. `agentforge eval` runs
+a suite of scripted conversations against a real agent config and checks the
+outcome against an `expect:` block, using the same data every run already persists
+(`runs.state`, `tool_calls.tool_name`, `runs.repair_count`, ...) rather than new
+runtime machinery:
+
+```yaml
+# examples/evals/weather.yaml
+agent: ../weather-http.yaml
+cases:
+  - name: resolves a city to coordinates
+    input: "What's the weather in Lisbon?"
+    expect:
+      final_state: completed
+      tool_called: ["geo.search", "weather.current"]
+      output_contains: ["Lisbon"]
+      max_turns: 6
+      no_repairs: true
+```
+
+```
+agentforge eval examples/evals                 # every suite, --replay (the default): scripted model responses, no API key
+agentforge eval examples/evals/weather.yaml --live --model qwen3:8b --model qwen3:14b   # a real model, once per --model, as a comparison
+agentforge eval examples/evals/weather.yaml --live --record                              # save what --live produced as the replay fixture
+```
+
+`--replay` fakes only the model leg (from a fixture under `testdata/fixtures/`) —
+tool calls are real, so `weather.yaml`'s case above makes an actual (free, keyless)
+call to Open-Meteo every time it runs; this is what CI runs on every push. `--live`
+drives a real model through the agent config's own provider, or `--model`'s
+override(s) — repeatable, so one command produces a matrix across local and hosted
+models. See `docs/DESIGN.md` section 12.
 
 ## CLI
 
@@ -288,6 +328,8 @@ agentforge runs list [--agent NAME] [--limit N] [--server URL]     # most recent
 agentforge runs get <id> [--server URL]                            # full trace: messages, tool calls, who approved
 agentforge runs approve|deny <id> <call-id> [--reason TEXT]        # decide a pending call and continue the run
 agentforge runs resume <id> [--server URL]                         # continue a run whose calls are already decided
+agentforge runs cancel <id> [--server URL]                         # stop a non-terminal run immediately
+agentforge eval <suite.yaml | dir> [--live [--model P]... [--record]]  # run a scripted eval suite; see "Evals" below
 ```
 
 `run` and the `agents`/`runs` commands work standalone against a local SQLite file (`~/.agentforge/agentforge.db` by default, override with `--db`), or against a running daemon via `--server` — same config, same behavior, either way. `agentforge run` exits non-zero when the run fails or hits an unhandled error, so it's safe to chain in a script; a run that pauses for approval prints the pending call IDs and exits 0 — decide with `runs approve`/`deny`.
@@ -323,6 +365,7 @@ GET    /v1/runs                      # most recent first; ?agent=name and ?limit
 GET    /v1/runs/{id}                 # full trace
 POST   /v1/runs/{id}/approve         # {call_id, decision: "approved"|"denied", reason?}
 POST   /v1/runs/{id}/resume          # drive the run forward after approving/denying
+POST   /v1/runs/{id}/cancel          # stop a non-terminal run immediately; 409 if it's already terminal
 
 GET    /healthz
 ```
@@ -331,7 +374,7 @@ GET    /healthz
 
 Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; and structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`.
 
-Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), a run-level deadline (`limits.timeout` is validated but not yet enforced), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
+Not yet: streaming isn't wired into the CLI (`run`/`chat` still get one atomic result), native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
 
 ## Building
 
