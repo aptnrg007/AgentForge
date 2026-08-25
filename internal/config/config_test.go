@@ -499,9 +499,9 @@ retry:
 name: bad
 model: {provider: ollama, name: foo}
 retry:
-  max_attemps: 3
+  bogus_field: 3
 `,
-			wantErr: `unknown field "max_attemps"`,
+			wantErr: `unknown field "bogus_field"`,
 		},
 		{
 			name: "tool_definitions missing name",
