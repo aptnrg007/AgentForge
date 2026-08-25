@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -891,6 +892,77 @@ func TestLoadNotifierExample(t *testing.T) {
 	}
 }
 
+func TestLoadSQLAnalystExample(t *testing.T) {
+	t.Setenv("AGENTFORGE_SQLITE_DB", "/tmp/shop.db")
+
+	cfg, err := Load("../../examples/sql-analyst.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ToolDefinitions) != 3 {
+		t.Fatalf("expected 3 tool_definitions, got %d", len(cfg.ToolDefinitions))
+	}
+	for _, def := range cfg.ToolDefinitions {
+		if def.Command == nil || def.HTTP != nil {
+			t.Errorf("%s: expected command-backed, got %+v", def.Name, def)
+		}
+	}
+	if len(cfg.Approvals.AutoApprove) != 2 {
+		t.Fatalf("approvals.auto_approve = %v, want 2 entries", cfg.Approvals.AutoApprove)
+	}
+	for _, name := range []string{"db.tables", "db.schema"} {
+		found := false
+		for _, p := range cfg.Approvals.AutoApprove {
+			if p == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("approvals.auto_approve missing %q", name)
+		}
+	}
+	for _, p := range cfg.Approvals.AutoApprove {
+		if p == "db.query" {
+			t.Errorf("db.query must stay approval-gated, not auto_approve")
+		}
+	}
+}
+
+func TestLoadLogInvestigatorExample(t *testing.T) {
+	cfg, err := Load("../../examples/log-investigator.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ToolDefinitions) != 2 {
+		t.Fatalf("expected 2 tool_definitions, got %d", len(cfg.ToolDefinitions))
+	}
+	search := cfg.ToolDefinitions[0]
+	if search.Name != "logs.search" || search.Command == nil || search.HTTP != nil {
+		t.Fatalf("unexpected first tool_definitions entry: %+v", search)
+	}
+	if len(cfg.Approvals.AutoApprove) != 2 {
+		t.Errorf("approvals.auto_approve = %v, want 2 entries", cfg.Approvals.AutoApprove)
+	}
+}
+
+func TestLoadDiffReviewerExample(t *testing.T) {
+	cfg, err := Load("../../examples/diff-reviewer.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ToolDefinitions) != 3 {
+		t.Fatalf("expected 3 tool_definitions, got %d", len(cfg.ToolDefinitions))
+	}
+	for _, def := range cfg.ToolDefinitions {
+		if def.Command == nil || def.HTTP != nil {
+			t.Errorf("%s: expected command-backed, got %+v", def.Name, def)
+		}
+	}
+	if len(cfg.Approvals.AutoApprove) != 3 {
+		t.Fatalf("expected all 3 git tools auto-approved, got %v", cfg.Approvals.AutoApprove)
+	}
+}
+
 func TestLoadToolPolicy(t *testing.T) {
 	cfg, err := Parse([]byte(`
 name: ok
@@ -1010,5 +1082,34 @@ func TestFilterToolsEmptyPatternsKeepsAll(t *testing.T) {
 	got := FilterTools(tools, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected all tools kept with no patterns, got %d", len(got))
+	}
+}
+
+// TestLoadEveryExample walks every YAML file in examples/ and asserts it
+// loads without error, so a new example added without its own hand-written
+// TestLoad<Name>Example still gets minimal coverage rather than none.
+func TestLoadEveryExample(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("GOOGLE_API_KEY", "test-key")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("GITHUB_TOKEN", "test-github-token")
+	t.Setenv("AGENTFORGE_FS_ROOT", "/tmp")
+	t.Setenv("AGENTFORGE_MEMORY_PATH", "/tmp/notes.json")
+	t.Setenv("AGENTFORGE_SQLITE_DB", "/tmp/shop.db")
+
+	files, err := filepath.Glob("../../examples/*.yaml")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no example YAML files found")
+	}
+	for _, f := range files {
+		f := f
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			if _, err := Load(f); err != nil {
+				t.Errorf("Load(%s): %v", f, err)
+			}
+		})
 	}
 }

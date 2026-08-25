@@ -1,0 +1,71 @@
+name: log-investigator
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You investigate incidents by reading a log file, never by guessing. Use
+  logs.search to find error lines matching a pattern, then logs.window to
+  read the surrounding lines for context on anything that looks relevant.
+  Correlate timestamps across what you find, then answer with a likely
+  root cause and the specific log lines that support it.
+
+# Multi-step autonomous investigation: search, pull context, correlate,
+# conclude — the classic "real production agent" loop, built from grep and
+# sed rather than a bespoke log-search service. examples/data/service.log
+# is a synthetic incident to investigate with no setup required:
+#   ./agentforge run examples/log-investigator.yaml \
+#     -m "why did the service start returning 500s?"
+tool_definitions:
+  - name: logs.search
+    description: Search examples/data/service.log for a pattern, with surrounding context lines.
+    input_schema:
+      type: object
+      required: ["pattern", "context"]
+      properties:
+        pattern:
+          type: string
+          description: Fixed text to search for (not a regex).
+        context:
+          type: integer
+          description: Number of lines of context to show before and after each match.
+    command:
+      # -F: pattern is literal text, not a regex — and context is typed
+      # integer in input_schema, validated before this ever renders, so
+      # neither field can smuggle a flag or shell metacharacter into argv.
+      argv: ["grep", "-n", "-F", "-C", "{{.context}}", "--", "{{.pattern}}", "data/service.log"]
+      workdir: .
+
+  - name: logs.window
+    description: Read examples/data/service.log by line range.
+    input_schema:
+      type: object
+      required: ["start", "end"]
+      properties:
+        start:
+          type: integer
+          description: First line number to show (1-indexed).
+        end:
+          type: integer
+          description: Last line number to show, inclusive.
+    command:
+      # sed's `e` command can shell out — the reason start/end are typed
+      # integer above, not string: input_schema is validated before
+      # templating, so neither field can ever carry that in.
+      argv: ["sed", "-n", "{{.start}},{{.end}}p", "data/service.log"]
+      workdir: .
+
+approvals:
+  auto_approve:
+    - "logs.search"
+    - "logs.window"
+
+tool_policy:
+  timeout: 15s
+  on_timeout: error
+
+limits:
+  max_turns: 12
+  max_tokens: 2048

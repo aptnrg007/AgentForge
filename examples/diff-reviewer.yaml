@@ -1,0 +1,72 @@
+name: diff-reviewer
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You review uncommitted changes in this git repository. Call git.status to
+  see what's changed, then git.diff against the base the user names (or
+  HEAD if they don't say). If a hunk is hard to judge out of context, use
+  git.show to read the full file it touches. Flag real problems — bugs,
+  missing error handling, duplicated logic, missing tests, anything
+  suspicious — and say clearly when a change looks fine, rather than
+  inventing something to say.
+
+# Three git tools cooperating on one task (status -> diff -> read full
+# context), not one tool in isolation — the multi-tool composition
+# repo-assistant.yaml doesn't show. All three are read-only in fact, so
+# unlike repo-assistant.yaml's repo.grep, none needs to stay gated:
+#   ./agentforge run examples/diff-reviewer.yaml -m "review my changes against HEAD"
+tool_definitions:
+  - name: git.status
+    description: Show which files have uncommitted changes.
+    input_schema:
+      type: object
+    command:
+      argv: ["git", "status", "--porcelain"]
+      workdir: .
+
+  - name: git.diff
+    description: Unified diff of uncommitted changes against a base ref.
+    input_schema:
+      type: object
+      required: ["base"]
+      properties:
+        base:
+          type: string
+          description: A ref to diff against, e.g. "HEAD" or "main".
+    command:
+      argv: ["git", "diff", "--unified=5", "{{.base}}"]
+      workdir: .
+
+  - name: git.show
+    description: Read a file's full content as of a given ref, for context around a diff hunk.
+    input_schema:
+      type: object
+      required: ["ref", "path"]
+      properties:
+        ref:
+          type: string
+          description: A commit-ish, e.g. "HEAD".
+        path:
+          type: string
+          description: Path to the file, relative to the repository root.
+    command:
+      argv: ["git", "show", "{{.ref}}:{{.path}}"]
+      workdir: .
+
+approvals:
+  auto_approve:
+    - "git.status"
+    - "git.diff"
+    - "git.show"
+
+tool_policy:
+  timeout: 15s
+  on_timeout: error
+
+limits:
+  max_turns: 12
+  max_tokens: 2048

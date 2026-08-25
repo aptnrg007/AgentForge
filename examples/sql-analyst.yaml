@@ -1,0 +1,70 @@
+name: sql-analyst
+
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  temperature: 0.2
+
+instructions: |
+  You answer questions about a SQLite database. Start by calling db.tables to
+  see what's there, then db.schema on any table you need the columns for —
+  never guess a column name. Write the smallest SELECT that answers the
+  question, call db.query, and explain the result in plain language. Never
+  attempt to modify data; you only have read access.
+
+# The classic tool + reasoning loop: discover schema, generate SQL, execute,
+# interpret. `sqlite3 -readonly -json` is the whole backend — no ORM, no
+# driver, no Go code. See examples/data/shop.sql for a seed script:
+#   sqlite3 /tmp/shop.db < examples/data/shop.sql
+#   export AGENTFORGE_SQLITE_DB=/tmp/shop.db
+tool_definitions:
+  - name: db.tables
+    description: List every table in the database.
+    input_schema:
+      type: object
+    command:
+      argv: ["sqlite3", "-readonly", "-json", "${AGENTFORGE_SQLITE_DB}",
+             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"]
+
+  - name: db.schema
+    description: Show the CREATE TABLE statement for one table.
+    input_schema:
+      type: object
+      required: ["table"]
+      properties:
+        table:
+          type: string
+          description: Exact table name, as returned by db.tables.
+    command:
+      argv: ["sqlite3", "-readonly", "${AGENTFORGE_SQLITE_DB}",
+             ".schema {{.table}}"]
+
+  - name: db.query
+    description: Run a read-only SELECT and return the rows as JSON.
+    input_schema:
+      type: object
+      required: ["query"]
+      properties:
+        query:
+          type: string
+          description: A single SELECT statement. No INSERT/UPDATE/DELETE/DDL.
+    command:
+      argv: ["sqlite3", "-readonly", "-json", "${AGENTFORGE_SQLITE_DB}", "{{.query}}"]
+
+approvals:
+  # db.tables/db.schema are read-only in practice, same reasoning as
+  # repo-assistant.yaml's repo.log. db.query stays gated — even with
+  # -readonly making it harmless to the data, a human should read the SQL
+  # the model wrote before it runs, the same way repo.grep stays gated
+  # there. -readonly is defense in depth, not the approval story.
+  auto_approve:
+    - "db.tables"
+    - "db.schema"
+
+tool_policy:
+  timeout: 15s
+  on_timeout: error
+
+limits:
+  max_turns: 10
+  max_tokens: 1024

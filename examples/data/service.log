@@ -1,0 +1,34 @@
+2026-08-25T14:58:01Z INFO  api    request GET /orders/8841 200 41ms
+2026-08-25T14:58:12Z INFO  api    request GET /orders/8842 200 38ms
+2026-08-25T14:58:47Z INFO  api    request POST /checkout 200 112ms
+2026-08-25T14:59:03Z INFO  db     connection pool: 18/20 in use
+2026-08-25T14:59:20Z INFO  api    request GET /orders/8843 200 44ms
+2026-08-25T14:59:51Z WARN  db     connection pool: 20/20 in use, 1 request queued
+2026-08-25T15:00:04Z INFO  api    request GET /orders/8844 200 39ms
+2026-08-25T15:00:33Z WARN  db     connection pool: 20/20 in use, 6 requests queued
+2026-08-25T15:01:02Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:01:09Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:01:15Z ERROR api    request POST /checkout 500 5012ms (db: connection acquire timeout)
+2026-08-25T15:01:22Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:01:30Z ERROR api    request GET /orders/8845 500 5003ms (db: connection acquire timeout)
+2026-08-25T15:01:41Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:01:44Z ERROR api    request GET /orders/8846 500 5001ms (db: connection acquire timeout)
+2026-08-25T15:02:03Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:02:05Z ERROR api    request POST /checkout 500 5009ms (db: connection acquire timeout)
+2026-08-25T15:02:14Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:02:18Z ERROR api    request GET /orders/8847 500 5006ms (db: connection acquire timeout)
+2026-08-25T15:02:29Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:02:31Z ERROR api    request GET /orders/8848 500 5002ms (db: connection acquire timeout)
+2026-08-25T15:02:40Z WARN  ops    500 rate: 47 in the last 5 minutes, threshold is 10
+2026-08-25T15:02:44Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:02:47Z ERROR api    request POST /checkout 500 5011ms (db: connection acquire timeout)
+2026-08-25T15:03:02Z ERROR db     connection acquire timeout after 5000ms (pool exhausted)
+2026-08-25T15:03:05Z ERROR api    request GET /orders/8849 500 5004ms (db: connection acquire timeout)
+2026-08-25T15:03:12Z WARN  ops    500 rate: 63 in the last 5 minutes, escalating to oncall
+2026-08-25T15:03:40Z INFO  ops    oncall acknowledged incident inc-4471
+2026-08-25T15:04:02Z INFO  ops    restarting service to clear the connection pool
+2026-08-25T15:05:11Z INFO  db     connection pool: 2/20 in use
+2026-08-25T15:05:14Z INFO  api    request GET /orders/8850 200 42ms
+2026-08-25T15:05:22Z INFO  api    request GET /orders/8851 200 40ms
+2026-08-25T15:05:49Z INFO  api    request POST /checkout 200 108ms
+2026-08-25T15:06:15Z INFO  db     connection pool: 4/20 in use

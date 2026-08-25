@@ -112,6 +112,14 @@ export AGENTFORGE_MEMORY_PATH=/tmp/notes.json
 ./agentforge run examples/weather-http.yaml -m "what's the weather in Lisbon?"  # same agent, zero MCP servers — see below
 ./agentforge run examples/repo-assistant.yaml -m "find every TODO in this repo"  # pauses for approval before running rg
 ./agentforge run examples/notifier.yaml -m "notify topic agentforge-demo titled Hi saying it works"  # a POST tool_definitions tool — see below
+
+sqlite3 /tmp/shop.db < examples/data/shop.sql
+export AGENTFORGE_SQLITE_DB=/tmp/shop.db
+./agentforge run examples/sql-analyst.yaml -m "which customer has spent the most?"  # generate SQL, pauses for approval before running it
+
+./agentforge run examples/log-investigator.yaml -m "why did the service start returning 500s?"  # multi-step log investigation, no setup needed
+
+./agentforge run examples/diff-reviewer.yaml -m "review my changes against HEAD"  # three git tools composed on one task
 ```
 
 The filesystem/notes pair makes a deliberate contrast: the filesystem agent gates every mutating tool (`write_file`, `edit_file`, `move_file`, `create_directory`) behind `approvals.require`; the notes agent has no `approvals` section at all, because gating writes to a local knowledge-graph file would just be friction. `codebase-notes.yaml` puts both of those servers in one config instead of picking one — `fs.*` and `memory.*` are namespaced by each server's own `mcp: name`, so there's nothing to reconcile even though "read a file" and "save a note" come from two unrelated processes; it reads files (read-only tools only, no write/edit/move/create) and records what it learned in the memory graph for a later run to recall.
@@ -119,6 +127,8 @@ The filesystem/notes pair makes a deliberate contrast: the filesystem agent gate
 The weather and digest agents both use the official reference fetch server, which is Python rather than npm — install `uv` once (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and `uvx` runs it with no separate install step. They also make their own contrast, over the same server: `weather.yaml` passes `--ignore-robots-txt` because Open-Meteo's API disallows crawlers by default even though it's a free, key-less API meant for exactly this kind of programmatic call; `article-digest.yaml` fetches whatever URL a user hands it, so it deliberately leaves that flag off and honors each site's robots.txt like a normal browser would.
 
 `weather-http.yaml` is the same agent as `weather.yaml` with no MCP server at all — see "Defining your own tools" below for why. `repo-assistant.yaml` is the `command:` counterpart: it wraps `rg` and `git log` directly, and demonstrates the approval gate every `command:`-backed tool gets by default. `notifier.yaml` is the third corner of `http:` tool_definitions neither of those cover: a `method: POST` with a templated `body:` and header, posting to [ntfy.sh](https://ntfy.sh) — a free, no-signup push-notification service. A topic name is an unauthenticated public channel, not a secret, so pick something distinctive rather than something you'd mind a stranger guessing.
+
+`sql-analyst.yaml`, `log-investigator.yaml`, and `diff-reviewer.yaml` are three more `command:`-only agents, each demonstrating a shape the ones above don't. `sql-analyst.yaml` is the classic tool-plus-reasoning loop — discover schema, generate SQL, execute, interpret — over a local SQLite database (seed one from `examples/data/shop.sql`); `db.tables`/`db.schema` are auto-approved like `repo.log`, but `db.query` stays gated even with `sqlite3 -readonly` making it harmless, because a human should read the model's SQL before it runs. `log-investigator.yaml` is autonomous multi-step investigation over a synthetic incident at `examples/data/service.log` — no setup, no credentials — searching for errors, pulling surrounding context, and correlating timestamps into a root cause; its `logs.window` tool types its line-range arguments as `integer` in `input_schema`, which is what keeps a `sed` range immune to `e`-command shell-out tricks, since input is validated against the schema before any template renders. `diff-reviewer.yaml` shows composition instead of gating: `git.status`, `git.diff`, and `git.show` are all genuinely read-only, so all three are auto-approved, and the interesting part is three tools cooperating on one review rather than any one of them alone.
 
 ## Defining your own tools
 
