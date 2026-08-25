@@ -73,11 +73,22 @@ type ollamaChatRequest struct {
 	// output, e.g. when the agent has tools registered — constrained
 	// decoding to a schema makes tool calls impossible on that turn.
 	Format json.RawMessage `json:"format,omitempty"`
+	// Think is a top-level request field (not an Options one — confirmed
+	// live against the installed Ollama), not a *ollamaOptions field.
+	// nil/omitted leaves the model's own default thinking behavior in
+	// place; explicit false has been measured to fix a real failure mode
+	// on qwen3:8b with tools registered (see ModelConfig.Think's comment).
+	Think *bool `json:"think,omitempty"`
 }
 
 type ollamaOptions struct {
 	Temperature float64 `json:"temperature,omitempty"`
 	NumPredict  int     `json:"num_predict,omitempty"`
+	// NumCtx raises Ollama's context-window size past its own 4096 default.
+	// This project used to need a derived Modelfile (`ollama create ... -f
+	// Modelfile`) purely to set this one option — see AlgoReel's
+	// algoreel-agents/Modelfile — now it's a plain config.ModelConfig field.
+	NumCtx int `json:"num_ctx,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -221,8 +232,10 @@ func (o *Ollama) Complete(ctx context.Context, r Request) (*Response, error) {
 		Options: ollamaOptions{
 			Temperature: r.Temperature,
 			NumPredict:  r.MaxTokens,
+			NumCtx:      r.NumCtx,
 		},
 		Format: ollamaFormat(r),
+		Think:  r.Think,
 	}
 
 	resp, err := o.doRequest(ctx, body)
@@ -261,8 +274,10 @@ func (o *Ollama) Stream(ctx context.Context, r Request) (Stream, error) {
 		Options: ollamaOptions{
 			Temperature: r.Temperature,
 			NumPredict:  r.MaxTokens,
+			NumCtx:      r.NumCtx,
 		},
 		Format: ollamaFormat(r),
+		Think:  r.Think,
 	}
 
 	resp, err := o.doRequest(ctx, body)

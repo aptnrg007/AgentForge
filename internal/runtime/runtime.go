@@ -236,9 +236,18 @@ type Config struct {
 	MaxTurns    int
 	MaxTokens   int
 	Temperature float64
-	Approvals   ApprovalPolicy
-	Output      OutputPolicy
-	ToolPolicy  ToolPolicy
+	// NumCtx is Ollama's context-window size. Zero means "use Ollama's own
+	// default" (currently 4096) — every other provider ignores this field
+	// entirely, same as ResponseSchema does for a provider without native
+	// structured-output support.
+	NumCtx int
+	// Think controls Ollama's thinking channel for hybrid-reasoning
+	// models. nil leaves the model/Ollama default in place; every other
+	// provider ignores this field entirely, same as NumCtx.
+	Think      *bool
+	Approvals  ApprovalPolicy
+	Output     OutputPolicy
+	ToolPolicy ToolPolicy
 	// RunTimeout bounds a run's total wall-clock duration end to end —
 	// model calls, tool execution, everything Step does — measured from
 	// the run's persisted CreatedAt, not from whenever this particular
@@ -716,6 +725,8 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 		Tools:          e.toolDefs(),
 		MaxTokens:      e.cfg.MaxTokens,
 		Temperature:    e.cfg.Temperature,
+		NumCtx:         e.cfg.NumCtx,
+		Think:          e.cfg.Think,
 		ResponseSchema: e.responseSchemaForRequest(),
 	})
 	latencyMS := time.Since(callStart).Milliseconds()
