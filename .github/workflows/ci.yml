@@ -90,5 +90,19 @@ jobs:
             sqlite3 --version
           '
 
+      # --offline is the actual assertion: it fails if mcp-server-fetch
+      # would need a download, which is exactly the regression this guards
+      # against (weather.yaml/article-digest.yaml re-fetching on every run).
+      - name: Verify MCP servers resolve without a download
+        run: |
+          docker run --rm --entrypoint sh agentforge -c '
+            set -eux
+            uvx --offline mcp-server-fetch --help >/dev/null
+            npm ls -g --depth=0 @modelcontextprotocol/server-filesystem
+            npm ls -g --depth=0 @modelcontextprotocol/server-memory
+            npm ls -g --depth=0 @modelcontextprotocol/server-github
+            npm ls -g --depth=0 @modelcontextprotocol/server-everything
+          '
+
       - name: Verify agentforge binary runs
         run: docker run --rm agentforge --help

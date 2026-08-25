@@ -54,6 +54,15 @@ RUN mkdir -p /home/agentforge/.agentforge && chown agentforge:agentforge /home/a
 
 USER agentforge
 WORKDIR /home/agentforge
+
+# mcp-server-fetch is Python, not npm — the four servers above come from
+# `npm install -g`, this one needs uv. Run as the agentforge user on
+# purpose: it installs into that user's uv tool directory, which is where
+# `uvx mcp-server-fetch` (what weather.yaml and article-digest.yaml
+# invoke) looks. Without this the package is downloaded on every single
+# `docker run`, since --rm throws the cache away each time.
+RUN uv tool install mcp-server-fetch
+
 # So `agentforge run examples/...` works exactly as documented in README.md
 # with no path changes. See README's "Docker" section for mounting your own
 # configs or a live repo instead of this baked-in copy.

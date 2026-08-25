@@ -482,6 +482,11 @@ MCP servers), `uv`/`uvx` (for `mcp-server-fetch`, used by `weather.yaml`/`articl
 (`sql-analyst.yaml`) — none of which need to be on the host. The image bakes in this repo's
 own `examples/` directory, so paths from the rest of this README work unmodified inside it.
 
+The MCP servers themselves are installed at build time too, not fetched on first use — the
+npm ones via `npm install -g`, `mcp-server-fetch` via `uv tool install` — so a `--rm`
+container doesn't re-download them on every run. CI asserts this with
+`uvx --offline mcp-server-fetch`, which fails if a download would be needed.
+
 ```
 docker build -t agentforge .
 
