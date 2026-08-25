@@ -120,6 +120,8 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		MaxTurns:    maxTurns,
 		MaxTokens:   cfg.Limits.MaxTokens,
 		Temperature: cfg.Model.Temperature,
+		NumCtx:      cfg.Model.NumCtx,
+		Think:       cfg.Model.Think,
 		Approvals: runtime.ApprovalPolicy{
 			Mode:        cfg.Approvals.Mode,
 			Require:     cfg.Approvals.Require,

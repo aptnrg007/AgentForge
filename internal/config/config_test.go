@@ -187,6 +187,38 @@ model:
 	}
 }
 
+func TestOllamaWithNumCtxLoadsClean(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model:
+  provider: ollama
+  name: qwen2.5-coder:14b
+  num_ctx: 16384
+`))
+	if err != nil {
+		t.Fatalf("expected no error for ollama with num_ctx: %v", err)
+	}
+	if cfg.Model.NumCtx != 16384 {
+		t.Fatalf("Model.NumCtx = %d, want 16384", cfg.Model.NumCtx)
+	}
+}
+
+func TestOllamaWithThinkFalseLoadsClean(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model:
+  provider: ollama
+  name: qwen3:8b
+  think: false
+`))
+	if err != nil {
+		t.Fatalf("expected no error for ollama with think: %v", err)
+	}
+	if cfg.Model.Think == nil || *cfg.Model.Think != false {
+		t.Fatalf("Model.Think = %v, want pointer to false", cfg.Model.Think)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -267,6 +299,30 @@ name: bad
 model: {provider: gemini, name: gemini-3.7-flash}
 `,
 			wantErr: `api_key is required for provider "gemini"`,
+		},
+		{
+			name: "num_ctx on a non-ollama provider",
+			yaml: `
+name: bad
+model: {provider: anthropic, name: claude-sonnet-5, api_key: x, num_ctx: 8192}
+`,
+			wantErr: `num_ctx is only meaningful for provider "ollama"`,
+		},
+		{
+			name: "negative num_ctx",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo, num_ctx: -1}
+`,
+			wantErr: "num_ctx must not be negative",
+		},
+		{
+			name: "think on a non-ollama provider",
+			yaml: `
+name: bad
+model: {provider: anthropic, name: claude-sonnet-5, api_key: x, think: false}
+`,
+			wantErr: `think is only meaningful for provider "ollama"`,
 		},
 		{
 			name: "unknown output on_invalid",

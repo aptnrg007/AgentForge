@@ -41,6 +41,23 @@ type ModelConfig struct {
 	// config string (env.go) — so a missing key fails at load time with a
 	// clear message, not on the first request.
 	APIKey string `json:"api_key,omitempty"`
+	// NumCtx sets Ollama's context-window size (its "options.num_ctx" chat
+	// request field). Ollama-only — no other provider has an equivalent
+	// request-time knob, so validate.go rejects this being set alongside
+	// any other provider rather than silently ignoring it (ground rule 3:
+	// fail at load time, not three retries in).
+	NumCtx int `json:"num_ctx,omitempty"`
+	// Think controls Ollama's top-level "think" chat request field for
+	// hybrid-reasoning models (e.g. qwen3): true/false forces the
+	// thinking channel on or off, nil leaves the model/Ollama default in
+	// place. Measured live against qwen3:8b with tools registered: the
+	// model sometimes narrates its entire plan into the thinking channel
+	// and then emits neither a tool call nor any content — Ollama reports
+	// this as a clean done_reason "stop", not a truncation, so raising
+	// max_tokens does not help. think:false removes the failure mode
+	// entirely by removing the channel it happens in. Ollama-only, same
+	// validation rule as NumCtx.
+	Think *bool `json:"think,omitempty"`
 }
 
 // MCPServer describes one MCP server to connect to. Only Transport: stdio

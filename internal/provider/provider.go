@@ -72,6 +72,15 @@ type Request struct {
 	Tools       []ToolDef
 	MaxTokens   int
 	Temperature float64
+	// NumCtx sets Ollama's context-window size. Only meaningful for the
+	// ollama provider — today the only one with a request-time context-length
+	// knob at all; every other provider ignores this field, same as
+	// ResponseSchema does for a provider without native structured output.
+	NumCtx int
+	// Think controls Ollama's top-level "think" request field for
+	// hybrid-reasoning models. nil leaves the model/Ollama default in
+	// place; only meaningful for the ollama provider, same as NumCtx.
+	Think *bool
 	// ResponseSchema, when non-empty, asks the provider to natively
 	// constrain its output to this JSON Schema. Only meaningful for a
 	// provider whose Capabilities().StructuredOutput is true; others

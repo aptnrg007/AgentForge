@@ -115,6 +115,23 @@ func (m ModelConfig) validate() error {
 	if m.Provider == "openai" && m.APIKey == "" && m.BaseURL == "" {
 		return fmt.Errorf("api_key is required for provider \"openai\" (unless base_url points at a server that doesn't need one)")
 	}
+	// num_ctx is an Ollama-specific chat request option (its context-window
+	// size) with no equivalent on any other provider. Rejecting it here
+	// rather than silently ignoring it on, say, provider: anthropic follows
+	// the same "fail at load time" discipline as the api_key checks above —
+	// a config author who meant it to do something finds out immediately,
+	// not after wondering why a paid model's context window never changed.
+	if m.NumCtx < 0 {
+		return fmt.Errorf("num_ctx must not be negative")
+	}
+	if m.NumCtx != 0 && m.Provider != "ollama" {
+		return fmt.Errorf("num_ctx is only meaningful for provider \"ollama\" (got %q)", m.Provider)
+	}
+	// think has the same single-provider shape as num_ctx above, and the
+	// same rationale for rejecting rather than ignoring it elsewhere.
+	if m.Think != nil && m.Provider != "ollama" {
+		return fmt.Errorf("think is only meaningful for provider \"ollama\" (got %q)", m.Provider)
+	}
 	return nil
 }
 
