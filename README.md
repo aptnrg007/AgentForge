@@ -472,3 +472,59 @@ CGO_ENABLED=0 go build -o agentforge ./cmd/agentforge
 ```
 
 Pure Go throughout (including SQLite, via `modernc.org/sqlite`) — no cgo, so this produces a genuinely static, single-file binary that runs on a machine with no Go toolchain installed.
+
+## Docker
+
+`docker build -t agentforge .` produces an image with the binary plus every dependency
+`examples/*.yaml` shells out to — Node (`npx`, for the filesystem/memory/github/everything
+MCP servers), `uv`/`uvx` (for `mcp-server-fetch`, used by `weather.yaml`/`article-digest.yaml`),
+`git` and `ripgrep` (`repo-assistant.yaml`, `diff-reviewer.yaml`), and `sqlite3`
+(`sql-analyst.yaml`) — none of which need to be on the host. The image bakes in this repo's
+own `examples/` directory, so paths from the rest of this README work unmodified inside it.
+
+```
+docker build -t agentforge .
+
+# Ollama runs on the host, not in the container — --network host puts the
+# container on the host's network namespace so the default
+# http://localhost:11434 an agent config expects just works, no base_url
+# edit needed. (Linux only; see below for Docker Desktop.)
+docker run --rm --network host \
+  -v agentforge-db:/home/agentforge/.agentforge \
+  agentforge run examples/weather-http.yaml -m "what's the weather in Lisbon?"
+
+docker run --rm --network host \
+  -v agentforge-db:/home/agentforge/.agentforge \
+  agentforge chat examples/everything-demo.yaml
+
+docker run --rm --network host \
+  -v agentforge-db:/home/agentforge/.agentforge \
+  agentforge serve --addr 127.0.0.1:8080   # --network host: already on the host's port 8080, no -p needed
+```
+
+The `agentforge-db` volume is `~/.agentforge/agentforge.db` — mount it (or don't, for a
+throwaway run) the same way you'd choose to persist any container's state; without it, run
+and approval history disappears when the container exits.
+
+`--network host` isn't available on Docker Desktop (Mac/Windows); use
+`--add-host=host.docker.internal:host-gateway` and point `model.base_url` at
+`http://host.docker.internal:11434` in a copy of the config instead — `model.base_url`
+isn't Ollama-specific despite the name (see `internal/agent/agent.go`), so this works the
+same way `examples/openai.yaml`'s `base_url` does for OpenAI-compatible endpoints.
+
+Two things worth knowing about what's baked in vs. mounted:
+
+- `filesystem-assistant.yaml`/`codebase-notes.yaml` need `AGENTFORGE_FS_ROOT` to point at a
+  path *inside the container* — bind-mount a host directory to that path, e.g.
+  `-v $(pwd):/home/agentforge/project -e AGENTFORGE_FS_ROOT=/home/agentforge/project`.
+- `repo-assistant.yaml` and `diff-reviewer.yaml` run `git`/`rg` against the config file's own
+  directory (`workdir: .` resolves against `SourceDir`, i.e. wherever the `.yaml` lives) — the
+  baked-in copies operate on the repo *as of the image build*, not your live working tree. To
+  review real uncommitted changes, bind-mount your working repo and copy the config to its
+  root first, so `SourceDir` resolves there instead of `examples/`:
+  ```
+  cp examples/diff-reviewer.yaml /path/to/your/repo/
+  docker run --rm --network host \
+    -v /path/to/your/repo:/home/agentforge/repo \
+    agentforge run /home/agentforge/repo/diff-reviewer.yaml -m "review my changes against HEAD"
+  ```

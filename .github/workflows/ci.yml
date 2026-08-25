@@ -64,3 +64,31 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.13.1
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t agentforge .
+
+      # Confirms the bundled dependencies examples/*.yaml shells out to
+      # (see README's "Docker" section) actually landed in the image, not
+      # just that the image built.
+      - name: Verify bundled tool dependencies
+        run: |
+          docker run --rm --entrypoint sh agentforge -c '
+            set -eux
+            node --version
+            npx --version
+            uv --version
+            uvx --version
+            git --version
+            rg --version
+            sqlite3 --version
+          '
+
+      - name: Verify agentforge binary runs
+        run: docker run --rm agentforge --help

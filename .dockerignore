@@ -1,0 +1,7 @@
+.git
+.github
+.claude
+agentforge
+*.db
+*.db-journal
+docs
