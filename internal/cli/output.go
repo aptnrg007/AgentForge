@@ -109,6 +109,14 @@ type runResult struct {
 	// needed first, unlike awaiting_approval. Mirrors the HTTP API's
 	// runResponse.Resumable (internal/api/dto.go).
 	Resumable bool
+
+	// Streamed is true when the driving path (driveLocalRun) already
+	// printed this run's tokens and tool calls/results live via
+	// eventPrinter as they happened. emitRunResultText uses it to skip
+	// printMessages — otherwise the same content would print twice. The
+	// remote path (runRemote) has no live stream to have shown, so it
+	// always leaves this false and keeps the original one-shot trace.
+	Streamed bool
 }
 
 // emitRunResult writes res to w in the requested format. Text format is
@@ -136,7 +144,9 @@ func emitRunResultText(w io.Writer, res runResult) {
 		fmt.Fprintln(w, hint)
 		return
 	}
-	printMessages(w, res.Messages)
+	if !res.Streamed {
+		printMessages(w, res.Messages)
+	}
 }
 
 // runEnvelope is the JSON shape emitted by --output-format json. Field

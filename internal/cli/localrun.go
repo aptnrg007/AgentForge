@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"agentforge/internal/agent"
@@ -11,6 +12,53 @@ import (
 	"agentforge/internal/runtime"
 	"agentforge/internal/store"
 )
+
+// eventPrinter renders an Engine's fine-grained progress events as a live
+// text stream — token deltas as they're generated, plus a line per tool
+// call/result — instead of the pre-streaming CLI's one atomic block of
+// output at the run's next stop point. inText tracks whether the cursor is
+// mid token-stream (no trailing newline yet), so a tool_call/tool_result
+// line — or the caller's final endLine — knows whether it needs to close
+// that line first.
+type eventPrinter struct {
+	w      io.Writer
+	inText bool
+}
+
+func newEventPrinter(o outputOptions) *eventPrinter {
+	return &eventPrinter{w: progressWriter(o)}
+}
+
+func (p *eventPrinter) onEvent(ev runtime.Event) {
+	switch ev.Kind {
+	case runtime.EventToken:
+		if !p.inText {
+			fmt.Fprint(p.w, "agent: ")
+			p.inText = true
+		}
+		fmt.Fprint(p.w, ev.Text)
+	case runtime.EventToolCall:
+		p.endLine()
+		fmt.Fprintf(p.w, "agent: calling %s(%s)\n", ev.ToolName, string(ev.Args))
+	case runtime.EventToolResult:
+		p.endLine()
+		label := "tool_result"
+		if ev.IsError {
+			label = "tool_error"
+		}
+		fmt.Fprintf(p.w, "%s[%s]: %s\n", label, ev.ToolName, ev.Result)
+	}
+}
+
+// endLine closes off a token stream left without a trailing newline — a
+// no-op if the last event already did (a tool_call/tool_result) or nothing
+// has streamed yet.
+func (p *eventPrinter) endLine() {
+	if p.inText {
+		fmt.Fprintln(p.w)
+		p.inText = false
+	}
+}
 
 // buildEngineFromStore reconstructs the engine that owns runID from its
 // agent's persisted config — the CLI-side equivalent of the HTTP daemon's
@@ -64,7 +112,11 @@ func buildEngineFromStore(ctx context.Context, st *store.Store, registry *mcp.Re
 func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, runID string, o outputOptions, schemaSet bool) error {
 	start := time.Now()
 
+	ep := newEventPrinter(o)
+	eng.OnEvent(ep.onEvent)
+
 	state, err := eng.Run(ctx, runID)
+	ep.endLine()
 	if err != nil {
 		if ctx.Err() != nil {
 			// eng.Run hit a dead ctx (Ctrl-C via main.go's signal-derived
@@ -106,7 +158,7 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 		}
 		return emitOutcome(o, runResult{
 			RunID: runID, State: string(state), Messages: msgs,
-			DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+			DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet, Streamed: true,
 		})
 
 	case runtime.StateFailed:
@@ -122,7 +174,7 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 		if mErr == nil {
 			if err := emitOutcome(o, runResult{
 				RunID: runID, State: string(state), Messages: msgs, Error: &errStr,
-				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet,
+				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet, Streamed: true,
 			}); err != nil {
 				return err
 			}
@@ -151,7 +203,7 @@ func driveLocalRun(ctx context.Context, st *store.Store, eng *runtime.Engine, ru
 		if mErr == nil {
 			if err := emitOutcome(o, runResult{
 				RunID: runID, State: string(state), Messages: msgs, Error: &errStr,
-				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet, Resumable: true,
+				DurationMS: time.Since(start).Milliseconds(), SchemaSet: schemaSet, Resumable: true, Streamed: true,
 			}); err != nil {
 				return err
 			}

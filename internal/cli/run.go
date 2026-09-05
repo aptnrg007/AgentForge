@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 	"agentforge/internal/agent"
 	"agentforge/internal/config"
 	"agentforge/internal/mcp"
+	"agentforge/internal/message"
+	"agentforge/internal/runtime"
 	"agentforge/internal/store"
 )
 
@@ -99,7 +104,15 @@ func runLocal(ctx context.Context, dbPath, cfgPath, msg string, o outputOptions)
 	return driveLocalRun(ctx, st, eng, runID, o, cfg.Output.Schema != "")
 }
 
-// runRemote registers the agent with a running daemon and runs it there.
+// runRemote registers the agent with a running daemon and drives the run
+// there over its SSE endpoint (POST .../stream) instead of the atomic
+// POST .../run — the --server counterpart to driveLocalRun's live
+// token/tool_call/tool_result output, so text-mode output looks the same
+// whether the run happened in-process or against a daemon. Unlike the
+// local path, the run ID isn't known until the stream's terminal frame
+// (the daemon generates it server-side), so there's no "run X started"
+// line to print up front the way runLocal has — the streamed output
+// itself is the progress signal here.
 func runRemote(ctx context.Context, server, authToken, cfgPath, msg string, o outputOptions) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -115,14 +128,113 @@ func runRemote(ctx context.Context, server, authToken, cfgPath, msg string, o ou
 	if err != nil {
 		return err
 	}
+
 	start := time.Now()
-	var run remoteRun
-	if err := apiPost(ctx, server+"/v1/agents/"+ag.Name+"/run", "application/json", reqBody, authToken, &run); err != nil {
-		return fmt.Errorf("run agent: %w", err)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server+"/v1/agents/"+ag.Name+"/stream", bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("stream agent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRemoteErrBodyBytes))
+		var eb apiErrorBody
+		if json.Unmarshal(body, &eb) == nil && eb.Error != "" {
+			return fmt.Errorf("stream agent: server returned %d: %s", resp.StatusCode, eb.Error)
+		}
+		return fmt.Errorf("stream agent: server returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	fmt.Fprintf(progressWriter(o), "run %s started\n", run.RunID)
-	return emitRemoteRunOutcome(run, o, server, schemaSetFromYAML(raw), time.Since(start))
+	ep := newEventPrinter(o)
+	var (
+		runID   string
+		state   string
+		errStr  *string
+		pending []remotePendingCall
+	)
+	scanErr := readSSE(resp.Body, func(ev sseEvent) bool {
+		switch ev.Event {
+		case "token":
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(ev.Data, &payload) == nil {
+				ep.onEvent(runtime.Event{Kind: runtime.EventToken, Text: payload.Text})
+			}
+		case "tool_call":
+			var payload struct {
+				Tool string          `json:"tool"`
+				Args json.RawMessage `json:"args"`
+			}
+			if json.Unmarshal(ev.Data, &payload) == nil {
+				ep.onEvent(runtime.Event{Kind: runtime.EventToolCall, ToolName: payload.Tool, Args: payload.Args})
+			}
+		case "tool_result":
+			var payload struct {
+				Tool    string `json:"tool"`
+				Result  string `json:"result"`
+				IsError bool   `json:"is_error"`
+			}
+			if json.Unmarshal(ev.Data, &payload) == nil {
+				ep.onEvent(runtime.Event{Kind: runtime.EventToolResult, ToolName: payload.Tool, Result: payload.Result, IsError: payload.IsError})
+			}
+		case "awaiting_approval":
+			var payload struct {
+				RunID   string              `json:"run_id"`
+				Pending []remotePendingCall `json:"pending"`
+			}
+			if json.Unmarshal(ev.Data, &payload) == nil {
+				runID, state, pending = payload.RunID, "awaiting_approval", payload.Pending
+			}
+			return true
+		case "done":
+			var payload struct {
+				RunID string  `json:"run_id"`
+				State string  `json:"state"`
+				Error *string `json:"error,omitempty"`
+			}
+			if json.Unmarshal(ev.Data, &payload) == nil {
+				runID, state, errStr = payload.RunID, payload.State, payload.Error
+			}
+			return true
+		}
+		return false
+	})
+	ep.endLine()
+	if scanErr != nil {
+		return fmt.Errorf("stream agent: %w", scanErr)
+	}
+	if runID == "" {
+		return fmt.Errorf("stream agent: connection closed before a run outcome arrived")
+	}
+
+	// The stream itself only carries tokens and tool events, not the
+	// run's full message history — fetch that the same way `runs get`
+	// does, so the streamed and (still atomic) resume/approve/deny
+	// --server paths report identical tool_calls_count/output in JSON
+	// mode.
+	var trace remoteRunTrace
+	if err := apiGet(ctx, server+"/v1/runs/"+runID, authToken, &trace); err != nil {
+		return fmt.Errorf("fetch run %s: %w", runID, err)
+	}
+	msgs := make([]message.Message, len(trace.Messages))
+	for i, m := range trace.Messages {
+		msgs[i] = message.Message{Role: m.Role, Content: m.Content}
+	}
+
+	run := remoteRun{
+		RunID: runID, State: state, Error: errStr, Messages: msgs,
+		Pending: pending, Resumable: state == "interrupted",
+	}
+	return emitRemoteRunOutcome(run, o, server, schemaSetFromYAML(raw), time.Since(start), true)
 }
 
 // schemaSetFromYAML reports whether the config the CLI is about to send
@@ -147,11 +259,11 @@ func schemaSetFromYAML(raw []byte) bool {
 // as emitOutcome in localrun.go — but only surfaces when nothing else
 // already failed: a run that genuinely failed should still report *that*
 // error, not a Close error that raced it.
-func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaSet bool, elapsed time.Duration) (err error) {
+func emitRemoteRunOutcome(run remoteRun, o outputOptions, server string, schemaSet bool, elapsed time.Duration, streamed bool) (err error) {
 	res := runResult{
 		RunID: run.RunID, State: run.State, Error: run.Error, Messages: run.Messages,
 		Pending: run.Pending, DurationMS: elapsed.Milliseconds(), SchemaSet: schemaSet, Server: server,
-		Resumable: run.Resumable,
+		Resumable: run.Resumable, Streamed: streamed,
 	}
 	w, closeW, err := outputTarget(o)
 	if err != nil {

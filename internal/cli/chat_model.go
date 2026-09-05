@@ -55,6 +55,15 @@ type chatModel struct {
 
 	transcript    []string
 	shownMsgCount int
+	// streaming is a live preview of the current assistant turn's text as
+	// it arrives via EventToken — shown by View but never itself added to
+	// transcript. appendNewMessages (run once Step reaches its next stop
+	// point) is still the sole authoritative source for transcript
+	// content, sourced from the store rather than the event stream — so
+	// this stays purely cosmetic (and empty, harmlessly, for any caller
+	// that never wires OnEvent to feed it, e.g. the tests in
+	// chat_model_test.go).
+	streaming string
 
 	input     textinput.Model
 	editInput textinput.Model
@@ -110,6 +119,23 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleStep(msg)
 	case pendingLoadedMsg:
 		return m.handlePendingLoaded(msg)
+	case runtime.Event:
+		return m.handleEngineEvent(msg)
+	}
+	return m, nil
+}
+
+// handleEngineEvent updates the live streaming preview from one
+// fine-grained progress event (delivered via tea.Program.Send from
+// OnEvent's callback, running concurrently with the blocking eng.Step
+// inside stepCmd). Only EventToken affects it — a tool_call/tool_result
+// is left for appendNewMessages to render from the store once Step
+// reaches its next stop point, the same as before streaming existed;
+// showing it twice (here live, then again from the store) would
+// duplicate it in transcript.
+func (m chatModel) handleEngineEvent(ev runtime.Event) (tea.Model, tea.Cmd) {
+	if ev.Kind == runtime.EventToken {
+		m.streaming += ev.Text
 	}
 	return m, nil
 }
@@ -187,6 +213,7 @@ func (m chatModel) handleStep(msg stepMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadPendingCmd()
 	case runtime.StateCompleted, runtime.StateFailed, runtime.StateInterrupted:
 		m.lastState = msg.state
+		m.streaming = ""
 		m.appendNewMessages()
 		if msg.state == runtime.StateFailed {
 			run, err := m.st.GetRun(m.ctx, m.runID)
@@ -228,6 +255,7 @@ func (m chatModel) handlePendingLoaded(msg pendingLoadedMsg) (tea.Model, tea.Cmd
 	// Flush the tool_use (and any preceding text) that triggered this
 	// pause now, not just at run completion, so the approval prompt
 	// appears with context instead of out of nowhere.
+	m.streaming = ""
 	m.appendNewMessages()
 	if len(m.pending) == 0 {
 		m.mode = modeStepping
@@ -345,6 +373,10 @@ func (m chatModel) View() string {
 	var b strings.Builder
 	for _, line := range m.transcript {
 		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if m.streaming != "" {
+		b.WriteString("agent: " + m.streaming)
 		b.WriteString("\n")
 	}
 

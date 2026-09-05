@@ -85,6 +85,14 @@ type apiErrorBody struct {
 	Error string `json:"error"`
 }
 
+// maxRemoteErrBodyBytes caps how much of a non-2xx streaming response
+// body run.go's runRemote reads before giving up on decoding an
+// apiErrorBody — the streaming path can't use doAPIRequest (that reads
+// the whole body eagerly, which would block forever on a real SSE
+// stream's 2xx body), so its own error path needs the same bound
+// doAPIRequest's io.ReadAll effectively has via a well-behaved server.
+const maxRemoteErrBodyBytes = 1 << 20
+
 func apiGet(ctx context.Context, url, token string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

@@ -220,7 +220,7 @@ func runsDecide(ctx context.Context, server, dbPath, authToken, runID, callID, d
 		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, authToken, &run); err != nil {
 			return err
 		}
-		return emitRemoteRunOutcome(run, o, server, false, time.Since(start))
+		return emitRemoteRunOutcome(run, o, server, false, time.Since(start), false)
 	}
 
 	if err := ensureDBDir(dbPath); err != nil {
@@ -254,7 +254,7 @@ func runsResume(ctx context.Context, server, dbPath, authToken, runID string, o 
 		if err := apiPost(ctx, server+"/v1/runs/"+runID+"/resume", "application/json", nil, authToken, &run); err != nil {
 			return err
 		}
-		return emitRemoteRunOutcome(run, o, server, false, time.Since(start))
+		return emitRemoteRunOutcome(run, o, server, false, time.Since(start), false)
 	}
 
 	if err := ensureDBDir(dbPath); err != nil {

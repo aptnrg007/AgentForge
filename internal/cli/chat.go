@@ -11,6 +11,7 @@ import (
 	"agentforge/internal/agent"
 	"agentforge/internal/config"
 	"agentforge/internal/mcp"
+	"agentforge/internal/runtime"
 	"agentforge/internal/store"
 )
 
@@ -64,6 +65,15 @@ func runChat(ctx context.Context, dbPath, cfgPath string) error {
 	// chat unusable, so chat is the one caller that opts out.
 	eng.ClearOutputPolicy()
 
-	_, err = tea.NewProgram(newChatModel(ctx, eng, st, cfg.Name)).Run()
+	p := tea.NewProgram(newChatModel(ctx, eng, st, cfg.Name))
+	// p.Send is safe to call from any goroutine, including the one
+	// OnEvent's callback runs on — the same goroutine tea runs a Cmd
+	// (stepCmd) on, blocked inside eng.Step for the duration of a turn.
+	// This is what turns eng.Step's synchronous token/tool_call/
+	// tool_result callbacks into live updates on the chat transcript
+	// instead of one atomic block once Step returns.
+	eng.OnEvent(func(ev runtime.Event) { p.Send(ev) })
+
+	_, err = p.Run()
 	return err
 }
