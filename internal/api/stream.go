@@ -71,6 +71,13 @@ func (s *Server) handleStreamAgent(w http.ResponseWriter, r *http.Request) {
 			sse.send("tool_call", toolCallEvent{CallID: ev.CallID, Tool: ev.ToolName, Args: ev.Args})
 		case runtime.EventToolResult:
 			sse.send("tool_result", toolResultEvent{CallID: ev.CallID, Tool: ev.ToolName, Result: ev.Result, IsError: ev.IsError})
+		case runtime.EventCompaction:
+			sse.send("compaction", compactionEvent{
+				TokensBefore: ev.TokensBefore,
+				TokensAfter:  ev.TokensAfter,
+				ElidedBlocks: ev.ElidedBlocks,
+				DroppedUnits: ev.DroppedUnits,
+			})
 		}
 	})
 

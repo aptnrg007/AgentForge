@@ -131,6 +131,7 @@ func Build(ctx context.Context, st *store.Store, registry *mcp.Registry, cfg *co
 		},
 		Output:             outputPolicy,
 		ToolPolicy:         toolPolicy(cfg.ToolPolicy),
+		Context:            contextPolicy(cfg.Limits.Context),
 		RunTimeout:         runTimeout,
 		OnRetriesExhausted: onRetriesExhausted(cfg.Retry),
 	})
@@ -220,6 +221,25 @@ func toolPolicy(cfg config.ToolPolicyConfig) runtime.ToolPolicy {
 		Timeout:   timeout,
 		OnTimeout: cfg.OnTimeout,
 		Overrides: overrides,
+	}
+}
+
+// contextPolicy translates cfg — nil when limits.context is absent from
+// YAML — into the runtime's ContextPolicy. A nil cfg returns the zero
+// value, which Engine.enforceContextBudget treats as "no budget", the
+// exact pre-existing behavior: an operator who never added limits.context
+// gets byte-for-byte identical behavior to a build of agentforge that
+// never had this field at all. Unlike toolPolicy/retryPolicy below, there
+// are no durations to re-parse and no "empty means use the engine
+// default" fields to resolve — cfg.OnOverflow passes straight through
+// empty, matching ToolPolicyConfig.OnTimeout's same convention.
+func contextPolicy(cfg *config.ContextConfig) runtime.ContextPolicy {
+	if cfg == nil {
+		return runtime.ContextPolicy{}
+	}
+	return runtime.ContextPolicy{
+		MaxInputTokens: cfg.MaxInputTokens,
+		OnOverflow:     cfg.OnOverflow,
 	}
 }
 

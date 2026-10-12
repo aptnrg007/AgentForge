@@ -186,6 +186,22 @@ func runRemote(ctx context.Context, server, authToken, cfgPath, msg string, o ou
 			if json.Unmarshal(ev.Data, &payload) == nil {
 				ep.onEvent(runtime.Event{Kind: runtime.EventToolResult, ToolName: payload.Tool, Result: payload.Result, IsError: payload.IsError})
 			}
+		case "compaction":
+			var payload struct {
+				TokensBefore int `json:"tokens_before"`
+				TokensAfter  int `json:"tokens_after"`
+				ElidedBlocks int `json:"elided_blocks"`
+				DroppedUnits int `json:"dropped_units"`
+			}
+			if json.Unmarshal(ev.Data, &payload) == nil {
+				ep.onEvent(runtime.Event{
+					Kind:         runtime.EventCompaction,
+					TokensBefore: payload.TokensBefore,
+					TokensAfter:  payload.TokensAfter,
+					ElidedBlocks: payload.ElidedBlocks,
+					DroppedUnits: payload.DroppedUnits,
+				})
+			}
 		case "awaiting_approval":
 			var payload struct {
 				RunID   string              `json:"run_id"`

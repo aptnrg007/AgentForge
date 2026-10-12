@@ -220,6 +220,46 @@ model:
 	}
 }
 
+func TestLimitsContextAbsentLeavesNilPointer(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model: {provider: ollama, name: foo}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// nil, not a zero-value ContextConfig{} — the distinction
+	// contextPolicy (internal/agent) and ContextConfig.validate both rely
+	// on to tell "no limits.context block at all" apart from an explicit
+	// (and, since max_input_tokens must be > 0, always invalid) empty one.
+	if cfg.Limits.Context != nil {
+		t.Fatalf("Limits.Context = %+v, want nil", cfg.Limits.Context)
+	}
+}
+
+func TestLimitsContextLoadsClean(t *testing.T) {
+	cfg, err := Parse([]byte(`
+name: ok
+model: {provider: ollama, name: foo}
+limits:
+  context:
+    max_input_tokens: 100000
+    on_overflow: truncate
+`))
+	if err != nil {
+		t.Fatalf("expected no error for a valid limits.context block: %v", err)
+	}
+	if cfg.Limits.Context == nil {
+		t.Fatalf("Limits.Context = nil, want a populated *ContextConfig")
+	}
+	if cfg.Limits.Context.MaxInputTokens != 100000 {
+		t.Errorf("MaxInputTokens = %d, want 100000", cfg.Limits.Context.MaxInputTokens)
+	}
+	if cfg.Limits.Context.OnOverflow != "truncate" {
+		t.Errorf("OnOverflow = %q, want %q", cfg.Limits.Context.OnOverflow, "truncate")
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -719,6 +759,69 @@ session:
   type: sqlite
 `,
 			wantErr: `unknown field "session"`,
+		},
+		{
+			name: "context missing max_input_tokens",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+limits:
+  context:
+    on_overflow: truncate
+`,
+			wantErr: "max_input_tokens: must be > 0",
+		},
+		{
+			name: "context negative max_input_tokens",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+limits:
+  context:
+    max_input_tokens: -1
+`,
+			wantErr: "max_input_tokens: must be > 0",
+		},
+		{
+			name: "context unknown on_overflow",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+limits:
+  context:
+    max_input_tokens: 1000
+    on_overflow: sometimes
+`,
+			wantErr: `on_overflow: unknown value "sometimes"`,
+		},
+		{
+			// compact is a real, documented value — ContextConfig.OnOverflow
+			// says so — but not yet implemented (see
+			// internal/runtime/context.go). Ground rule 3: rejected at load
+			// time, same shape as the "http" mcp transport case above, not
+			// left to silently behave like "truncate".
+			name: "context on_overflow compact is not yet supported",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+limits:
+  context:
+    max_input_tokens: 1000
+    on_overflow: compact
+`,
+			wantErr: `"compact" is not yet supported`,
+		},
+		{
+			name: "unknown key under limits.context",
+			yaml: `
+name: bad
+model: {provider: ollama, name: foo}
+limits:
+  context:
+    max_input_tokens: 1000
+    bogus_field: 3
+`,
+			wantErr: `unknown field "bogus_field"`,
 		},
 	}
 

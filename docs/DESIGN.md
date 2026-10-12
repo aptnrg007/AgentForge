@@ -37,7 +37,7 @@ references are resolved by reflecting over every string field (`internal/config/
 so a typo'd secret fails at load, matching ground rule 3.
 
 Top-level keys: `name`, `model`, `instructions`, `mcp`, `tool_definitions`, `tools`,
-`approvals`, `limits`, `session`, `output`, `tool_policy`, `retry`. See `README.md`'s
+`approvals`, `limits`, `output`, `tool_policy`, `retry`. See `README.md`'s
 "Agent config" section for the annotated example; `internal/config/validate.go` is the
 authoritative source for cross-field rules (duplicate namespaces, literal-host
 requirements on templated URLs, provider-specific `api_key` requirements, and so on).
@@ -276,3 +276,90 @@ column with no `CHECK` constraint (`schema.sql`) — but `schemaVersion` still b
 already has `interrupted` runs in it gets `migrateSchema`'s existing "newer than this
 binary supports" error instead of hot-looping forever on a state its own `Step`/`Run`
 predate.
+
+## §17 — Context budget (`limits.context`)
+
+§16 closed the gap between a run's resumability (ground rule 1) and a *transient*
+provider failure. It left a second gap untouched: `stepModel` sends `ListMessages`'
+entire history to the provider every turn with no budget at all, so a tool-heavy run
+grows its own request until it hits a context-length rejection — and that rejection is
+**permanent** (`(*provider.Error).Retryable()` doesn't cover 400), so it lands in
+`StateFailed`, not `StateInterrupted`, despite every byte needed to continue already
+being in SQLite, same as the problem §16 solved, just one layer earlier. On Ollama —
+the default provider in every example config — there's no error at all: it silently
+truncates at `model.num_ctx`, so the model quietly loses the start of the conversation
+with no signal to the operator.
+
+**The policy.** `internal/runtime/context.go`'s `ContextPolicy{MaxInputTokens,
+OnOverflow}` is `agent.Build`'s translation target for `limits.context`
+(`config.ContextConfig`), same shape as `ApprovalPolicy`/`ToolPolicy`. The zero value
+(`MaxInputTokens` 0) is a no-op by construction — `fitHistory` and
+`Engine.enforceContextBudget` both short-circuit on it before doing anything — so an
+agent with no `limits.context` block gets byte-for-byte identical behavior to a build
+of agentforge that never had this field at all, the same bar §16's retry passthrough
+(`MaxAttempts <= 1`) and ground rule 3's validate-at-load discipline both hold
+elsewhere in this codebase.
+
+**No real tokenizer.** `estimateTokens` is a character-ratio estimate
+(`charsPerToken = 4`, rounded up), not an exact count: `CGO_ENABLED=0` rules out the
+cgo-backed tokenizers, and a single exact count isn't available anyway across four
+providers with four different vocabularies. Rounding up is deliberate — undercounting
+chars-per-token overcounts tokens, the safe direction for a budget whose only job is
+to stay under a limit, not to bill precisely. Image bytes are excluded from the
+estimate: `anthropicToolResultContent`'s `keepImages` (`internal/provider/
+anthropic.go`) already collapses a tool result's images to a text summary on every
+message but the newest, so at most one turn ever carries real image bytes, and that
+turn's actual vision-token cost doesn't scale linearly with base64 length anyway —
+counting it would misestimate without meaningfully improving the budget's actual job,
+catching accumulated tool-result text.
+
+**The two-pass elision policy.** `fitHistory` operates on `unit`s — a contiguous
+one- or two-message run that must be kept or dropped together, because in settled
+history (the only kind `stepModel` ever calls it on) an assistant message with a
+`tool_use` is always immediately followed by the `RoleTool` message carrying its
+result. Splitting the two would orphan one side of that pairing, which every
+provider's translator either hard-rejects (`toGeminiContents`' `functionResponse.name`
+lookup — "a hard 400 if empty") or silently mistranslates. `protectedUnits` marks the
+very first unit (the run's original request) and the `minProtectedUnits` most recent
+ones as permanently off-limits, so the model never loses the thread of what it was
+just doing even under an aggressive budget. Within what's left, elision runs in two
+passes, oldest-eligible-first: shrink a `tool_result` body down to a byte-count marker
+in place first (every pairing stays present, just smaller — cheaper to the model's
+continuity than losing a turn outright), and only drop whole units outright if
+shrinking wasn't enough (a large plain-text assistant reply with no tool call has
+nothing for the shrink pass to touch). Dropping a unit never happens if shrinking it
+already reached budget — `fitHistory`'s `fits()` check runs before each unit is even
+considered.
+
+**`on_overflow: fail` skips elision entirely**, by design: it's for an operator who
+wants to know a run can't continue under its configured budget, not have agentforge
+decide what to drop on its own behalf. `Engine.enforceContextBudget` checks the raw
+estimate against the budget *before* ever calling `fitHistory`, and ends the run in
+`StateFailed` — not `StateInterrupted` — if it's over. This is §16's argument applied
+in reverse: `interrupted` exists for a condition that may clear by the time someone
+looks again, whereas resuming an over-budget run would rebuild the identical
+oversized request and fail identically; there's nothing to wait out.
+
+**SQLite is never touched.** `fitHistory` takes the slice `ListMessages` already
+returned and returns a new one; it has no store handle, can't acquire one, and
+`stepModel` only ever reassigns its local `msgs` variable with the result. The
+persisted history a resumed run rebuilds its request from, and everything `runs
+get`/`GET /v1/runs/{id}` show, is exactly what actually happened — a compaction
+shrinks what the provider receives this turn, never what's on disk. `EventCompaction`
+(`internal/runtime/events.go`) reports when that happened, flowing through the same
+`OnEvent` mechanism `token`/`tool_call`/`tool_result` already use — out through
+`handleStreamAgent`'s SSE switch (`internal/api/stream.go`, unlabeled frames an older
+client can't parse are simply events it never subscribed to) and `pkg/agentforge`'s
+`WithEvents` — plus one `Config.Logger` line, matching §13's per-transition logging
+convention.
+
+**Phasing.** `on_overflow: compact` — LLM-generated summarization — is validated as a
+real value (`config.ContextConfig.validate`) but rejected at load time with "not yet
+supported," the same ground-rule-3 shape as `transport: http`'s rejection in
+`MCPServer.validate`, rather than silently behaving like `truncate`. It would need to
+persist the summary it generates (ground rule 1: a resumed run must rebuild the same
+request it would have built before the restart, and a summary recomputed after a
+restart would differ) — a real schema migration past `schemaVersion` 3, unlike §16's
+deliberately empty one, since there's an actual column to add this time. `truncate`
+and `fail` ship first because neither needs that: `truncate` is purely a function of
+what `ListMessages` already returns, computed fresh every turn.

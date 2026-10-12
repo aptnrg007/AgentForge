@@ -17,6 +17,12 @@ const (
 	// EventToolResult reports a tool call's outcome, including a denied
 	// call's synthesized error result.
 	EventToolResult EventKind = "tool_result"
+	// EventCompaction reports that stepModel shrank or dropped part of
+	// the message history to fit limits.context.max_input_tokens before
+	// sending it to the model — see internal/runtime/context.go. The
+	// full, untouched history stays in SQLite (ground rule 1); only the
+	// outbound request shrank.
+	EventCompaction EventKind = "compaction"
 )
 
 // Event is a single observation of a run's progress, delivered to an
@@ -32,4 +38,10 @@ type Event struct {
 
 	Result  string // EventToolResult
 	IsError bool   // EventToolResult
+
+	// EventCompaction — see Elision, which these mirror field-for-field.
+	TokensBefore int
+	TokensAfter  int
+	ElidedBlocks int
+	DroppedUnits int
 }

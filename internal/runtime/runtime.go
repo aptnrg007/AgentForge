@@ -248,6 +248,12 @@ type Config struct {
 	Approvals  ApprovalPolicy
 	Output     OutputPolicy
 	ToolPolicy ToolPolicy
+	// Context bounds the token budget of the message history sent to the
+	// model each turn. The zero value (MaxInputTokens 0) is unbounded —
+	// the pre-existing behavior, unchanged unless limits.context opts in;
+	// agent.Build sets this from limits.context. See
+	// internal/runtime/context.go.
+	Context ContextPolicy
 	// RunTimeout bounds a run's total wall-clock duration end to end —
 	// model calls, tool execution, everything Step does — measured from
 	// the run's persisted CreatedAt, not from whenever this particular
@@ -716,6 +722,11 @@ func (e *Engine) stepModel(ctx context.Context, run *store.Run) (State, error) {
 	if err != nil {
 		return "", err
 	}
+	fitted, cbState, cbErr, done := e.enforceContextBudget(ctx, run, msgs)
+	if done {
+		return cbState, cbErr
+	}
+	msgs = fitted
 
 	callStart := time.Now()
 	resp, err := e.complete(ctx, provider.Request{

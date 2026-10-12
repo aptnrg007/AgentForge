@@ -328,6 +328,34 @@ func (l LimitsConfig) validate() error {
 			return fmt.Errorf("timeout: %w", err)
 		}
 	}
+	if err := l.Context.validate(); err != nil {
+		return fmt.Errorf("context: %w", err)
+	}
+	return nil
+}
+
+// validate has a pointer receiver specifically so it can be called
+// directly on LimitsConfig.Context (nil when limits.context is absent
+// from YAML) without the caller needing its own nil check first — a nil
+// *ContextConfig is a valid, no-op config, not an error.
+func (c *ContextConfig) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.MaxInputTokens <= 0 {
+		return fmt.Errorf("max_input_tokens: must be > 0")
+	}
+	switch c.OnOverflow {
+	case "", "truncate", "fail":
+	case "compact":
+		// Ground rule 3 (fail at load time, not use time), same reasoning
+		// and same message shape as MCPServer.validate's "http" transport
+		// rejection: a typo'd or aspirational on_overflow: compact fails
+		// immediately instead of silently behaving like "truncate".
+		return fmt.Errorf("on_overflow: \"compact\" is not yet supported (only \"truncate\" and \"fail\" are)")
+	default:
+		return fmt.Errorf("on_overflow: unknown value %q", c.OnOverflow)
+	}
 	return nil
 }
 

@@ -16,6 +16,7 @@ const (
 	EventToken      = runtime.EventToken
 	EventToolCall   = runtime.EventToolCall
 	EventToolResult = runtime.EventToolResult
+	EventCompaction = runtime.EventCompaction
 )
 
 type runOptions struct {

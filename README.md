@@ -90,6 +90,18 @@ approvals:
 limits:
   max_turns: 10
   max_tokens: 4096
+  # context:                       # optional: a proactive token budget for the
+  #   max_input_tokens: 100000      # history sent to the model each turn, so a
+  #   on_overflow: truncate         # tool-heavy run shrinks its own request instead
+  #                                 # of growing it until a provider rejects it
+  #                                 # outright (or, on Ollama, silently truncates at
+  #                                 # num_ctx with no error at all). truncate (default)
+  #                                 # shrinks/drops the oldest history to fit; fail
+  #                                 # ends the run immediately, naming the budget and
+  #                                 # the estimate, instead of deciding what to drop.
+  #                                 # The full history always stays in SQLite — `runs
+  #                                 # get` still shows everything; only the outbound
+  #                                 # request shrinks.
 ```
 
 Unknown keys are load errors, not silently ignored typos. A missing `${GITHUB_TOKEN}` (or `${ANTHROPIC_API_KEY}`) fails at load time with a clear message, not the first time a tool tries to use it — and `provider: anthropic`/`provider: openai`/`provider: gemini` without an `api_key` fails the same way, before any request goes out (an `openai` config with `base_url` set is the one exception — see `examples/openai.yaml`, or `examples/anthropic.yaml`/`examples/gemini.yaml` for the matching Anthropic/Gemini configs). See `examples/minimal.yaml` and `examples/everything-demo.yaml` for working configs — the latter uses the public `@modelcontextprotocol/server-everything` reference server, so it runs with zero credentials. Point any of them at Anthropic, OpenAI, or Gemini instead of Ollama by swapping `model.provider`/`model.name`/`model.api_key`; nothing else in the config changes. `examples/github-assistant.yaml` is this config, runnable as-is with a real `GITHUB_TOKEN`.
@@ -332,6 +344,44 @@ both `failed` and still-in-flight; the HTTP API's `POST .../run` and `.../stream
 Set `retry.on_exhausted: fail` to go back to ending the run outright instead, matching every
 other kind of provider failure.
 
+## Context budget
+
+With no `limits.context` block, every byte of a run's history is sent to the model every
+turn, unbounded — a tool-heavy run grows its own request until a provider rejects it
+outright with a context-length error (which, unlike a rate limit, is permanent: it fails
+the run immediately, not `interrupted`), or, on Ollama, silently truncates at `model.num_ctx`
+with no error at all. `limits.context` closes that gap:
+
+```yaml
+limits:
+  context:
+    max_input_tokens: 100000   # an estimate, not an exact token count — see below
+    on_overflow: truncate       # truncate (default) | fail
+```
+
+There's no real tokenizer behind `max_input_tokens` — a single exact count isn't available
+anyway across four providers with four different vocabularies — so it's a conservative,
+character-based estimate with headroom built in; leave some margin below the provider's
+actual context window rather than setting this to its exact limit.
+
+`on_overflow: truncate` shrinks the oldest tool-result bodies in place first (keeping every
+tool call paired with its result, just smaller), then drops whole oldest turns outright only
+if shrinking wasn't enough — the first message and the most recent turn or two are never
+touched either way. `on_overflow: fail` skips all of that and ends the run immediately,
+naming the budget and the estimate, for a config author who wants to know the run can't
+continue rather than have agentforge decide what to drop on its own behalf.
+
+Either way, **SQLite keeps the full, untouched history** — `agentforge runs get` shows
+every tool call in full regardless of what the provider actually received that turn; only
+the outbound request shrinks. A compaction shows up live too, the same way a tool call
+does:
+
+```
+agent: calling logs.search({"pattern":"500","context":5})
+context: compacted history to fit budget (5274 -> 1765 est. tokens, 4 block(s) elided, 4 turn(s) dropped)
+agent: the root cause is connection pool exhaustion...
+```
+
 ## Evals
 
 The reliability machinery above — repair loops, approval gates, tool-call retries —
@@ -461,9 +511,9 @@ SQLite store as the CLI (`~/.agentforge/agentforge.db` by default, override with
 
 ## What's here (and what isn't)
 
-Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, and that same token/tool_call/tool_result stream wired into every CLI path that drives a run — the embedded-engine paths (`run`, `chat`, `runs approve|deny|resume`) print an agent's reply as it's generated instead of only once the run stops, `chat`'s REPL doing the same live inside its transcript, and `run --server` consumes the daemon's own `/stream` endpoint the same way (`runs approve|deny|resume --server` still call the atomic `/approve`/`/resume` endpoints — there's no streaming equivalent of those on the daemon side); four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`; and provider retries (`retry:`, on by default) that leave a run whose retry budget runs out `interrupted` — resumable, not failed outright — closing the gap where a transient 429/503 used to permanently kill a run despite every byte needed to continue already being in SQLite.
+Built so far: the persisted run state machine with tool-call repair, an MCP client with process supervision and crash recovery, YAML config with env interpolation, the HTTP daemon, the full CLI (including driving a run through an approval gate and back, and listing runs, from the command line — not just from `chat`), approval gates with timeouts, per-tool timeouts (`tool_policy`) with pattern overrides, in-config tool definitions (`tool_definitions:` — HTTP requests or exec'd commands, no MCP server required) with a default approval gate on command-backed ones, a chat REPL for driving all of it interactively, SSE streaming on `/v1/agents/{name}/stream`, and that same token/tool_call/tool_result stream wired into every CLI path that drives a run — the embedded-engine paths (`run`, `chat`, `runs approve|deny|resume`) print an agent's reply as it's generated instead of only once the run stops, `chat`'s REPL doing the same live inside its transcript, and `run --server` consumes the daemon's own `/stream` endpoint the same way (`runs approve|deny|resume --server` still call the atomic `/approve`/`/resume` endpoints — there's no streaming equivalent of those on the daemon side); four providers behind one `Provider` interface — Ollama, Anthropic, OpenAI, and Gemini (native `generateContent`, so its thinking models' function-call `thoughtSignature` round-trips correctly across multi-turn tool loops — plus anything OpenAI-compatible via `base_url`: Groq, Together, xAI/Grok, vLLM, llama.cpp, ...) — with the same approval/denial/resume flow regardless of which; schema-validated structured output (`output.schema`) with automatic self-correction, native alongside tool use on OpenAI, native with no tools on Ollama, a validate-and-retry fallback everywhere else; structured run output (`--output-format json`, `--output PATH`, `-m @file`) for scripting `run`/`runs approve|deny|resume`; and provider retries (`retry:`, on by default) that leave a run whose retry budget runs out `interrupted` — resumable, not failed outright — closing the gap where a transient 429/503 used to permanently kill a run despite every byte needed to continue already being in SQLite; and a proactive context budget (`limits.context`) that shrinks/drops the oldest history to fit before a tool-heavy run's own request grows past what the provider will accept — the one failure mode retries couldn't help with, since a context-length rejection is permanent, not transient, closing the gap where it used to end the run outright (or, on Ollama, silently truncate history with no error at all) despite the full, untouched trace still sitting in SQLite the whole time.
 
-Not yet: native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
+Not yet: native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), `limits.context`'s `on_overflow: compact` (LLM-generated summarization instead of mechanical shrink/drop — `truncate`/`fail` are implemented today), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
 
 ## Building
 

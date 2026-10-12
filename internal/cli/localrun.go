@@ -47,6 +47,10 @@ func (p *eventPrinter) onEvent(ev runtime.Event) {
 			label = "tool_error"
 		}
 		fmt.Fprintf(p.w, "%s[%s]: %s\n", label, ev.ToolName, ev.Result)
+	case runtime.EventCompaction:
+		p.endLine()
+		fmt.Fprintf(p.w, "context: compacted history to fit budget (%d -> %d est. tokens, %d block(s) elided, %d turn(s) dropped)\n",
+			ev.TokensBefore, ev.TokensAfter, ev.ElidedBlocks, ev.DroppedUnits)
 	}
 }
 

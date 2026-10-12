@@ -136,6 +136,14 @@ type toolResultEvent struct {
 	IsError bool   `json:"is_error,omitempty"`
 }
 
+// compactionEvent mirrors runtime.Elision — see runtime.EventCompaction.
+type compactionEvent struct {
+	TokensBefore int `json:"tokens_before"`
+	TokensAfter  int `json:"tokens_after"`
+	ElidedBlocks int `json:"elided_blocks"`
+	DroppedUnits int `json:"dropped_units"`
+}
+
 type awaitingApprovalEvent struct {
 	RunID   string        `json:"run_id"`
 	Pending []pendingCall `json:"pending"`

@@ -136,6 +136,34 @@ type LimitsConfig struct {
 	MaxTurns  int    `json:"max_turns,omitempty"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
+	// Context turns on a proactive token budget for the message history
+	// sent to the model each turn, so a tool-heavy run shrinks its own
+	// request instead of growing it until a provider rejects it outright
+	// (or, on Ollama, silently truncates at num_ctx with no error at
+	// all). A nil pointer (the default, absent from YAML) means no
+	// budget — every byte of history is sent every turn, the pre-existing
+	// behavior, byte-for-byte unchanged — the same "pointer means opt-in"
+	// shape as ModelConfig.Think.
+	Context *ContextConfig `json:"context,omitempty"`
+}
+
+// ContextConfig bounds the message history sent to the model each turn.
+// The full, untruncated history always stays in SQLite regardless of
+// this setting (ground rule 1, docs/DESIGN.md) — only the outbound
+// provider request shrinks, so `agentforge runs get` keeps showing
+// everything that actually happened.
+type ContextConfig struct {
+	// MaxInputTokens is an estimated budget, not an exact count — there
+	// is no real tokenizer here (see internal/runtime/context.go), so
+	// leave headroom below a provider's actual context window.
+	MaxInputTokens int `json:"max_input_tokens"`
+	// OnOverflow is "truncate" (default, empty) — shrink/drop the oldest
+	// history until the estimate fits — or "fail", which ends the run
+	// immediately with an error naming the budget and the estimate
+	// instead of attempting to fit it. "compact" (LLM-generated
+	// summarization) is validated but not yet implemented — see
+	// ContextConfig.validate.
+	OnOverflow string `json:"on_overflow,omitempty"`
 }
 
 // OutputConfig turns on schema-validated structured output for a run's
