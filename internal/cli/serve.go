@@ -5,9 +5,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentforge/internal/api"
-	"agentforge/internal/mcp"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/api"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 func newServeCmd() *cobra.Command {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // newApprovalTool is like newCountingTool but also sets RequiresApproval,

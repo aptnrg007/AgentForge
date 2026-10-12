@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // These drive the real Engine against a real provider.Anthropic pointed

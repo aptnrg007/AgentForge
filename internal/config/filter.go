@@ -3,7 +3,7 @@ package config
 import (
 	"path"
 
-	"agentforge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
 )
 
 // FilterTools keeps only the tools whose namespaced name (e.g.

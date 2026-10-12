@@ -7,7 +7,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // TestMcpContentToBlocksRoundTripsImageBytes is the regression test for

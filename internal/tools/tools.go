@@ -3,9 +3,9 @@ package tools
 import (
 	"fmt"
 
-	"agentforge/internal/config"
-	"agentforge/internal/runtime"
-	"agentforge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/schema"
 )
 
 // defaultMaxBytes caps a defined tool's captured output (HTTP response

@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/message"
-	"agentforge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
 )
 
 // Run is one run's outcome as of the moment Run/Resume returned:

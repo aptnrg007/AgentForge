@@ -486,7 +486,7 @@ package uses; `pkg/agentforge` is that wiring, exported, so an agent can be run
 in-process from Go code without a daemon:
 
 ```go
-import "agentforge/pkg/agentforge"
+import "github.com/aptnrg007/AgentForge/pkg/agentforge"
 
 ag, err := agentforge.Load("agent.yaml")
 if err != nil {
@@ -515,13 +515,32 @@ Built so far: the persisted run state machine with tool-call repair, an MCP clie
 
 Not yet: native structured output on Anthropic (forced tool-use — fallback validation works today, just costs an extra round trip on a violation), OpenAI's `strict:true` schema mode (would need a conformance check against the schema subset it requires), `limits.context`'s `on_overflow: compact` (LLM-generated summarization instead of mechanical shrink/drop — `truncate`/`fail` are implemented today), and everything explicitly deferred — dashboard, Kubernetes, multi-tenancy, Postgres/Redis, RAG, multi-agent workflows, and a visual builder. `tool_definitions:` covers the narrow one-request/one-command case; MCP remains the extension mechanism for anything stateful or multi-tool, so there's still no separate plugin SDK beyond it. None of that is missing by accident.
 
+## Installing
+
+Three ways to get the binary, in order of least setup:
+
+```
+# 1. A prebuilt release — no Go toolchain needed. Download the
+#    agentforge_<version>_<os>_<arch>.tar.gz for your platform from:
+#    https://github.com/aptnrg007/AgentForge/releases/latest
+
+# 2. go install, if you have a Go 1.25+ toolchain
+go install github.com/aptnrg007/AgentForge/cmd/agentforge@latest
+
+# 3. From a clone (what the rest of this README assumes)
+git clone https://github.com/aptnrg007/AgentForge && cd AgentForge
+go build -o agentforge ./cmd/agentforge
+```
+
+`agentforge --version` reports the exact tag, commit, and Go toolchain a binary was built from — releases and `go install` both embed this via `-ldflags`; a plain `go build` from a clone prints `dev`/`unknown` instead, which is expected (see `internal/cli/version.go` and `.github/workflows/release.yml` for the flags, if you want a local build to carry real version info too).
+
 ## Building
 
 ```
 CGO_ENABLED=0 go build -o agentforge ./cmd/agentforge
 ```
 
-Pure Go throughout (including SQLite, via `modernc.org/sqlite`) — no cgo, so this produces a genuinely static, single-file binary that runs on a machine with no Go toolchain installed.
+Pure Go throughout (including SQLite, via `modernc.org/sqlite`) — no cgo, so this produces a genuinely static, single-file binary that runs on a machine with no Go toolchain installed. `cmd/agentforge` and `pkg/agentforge` are the only public surface this module promises — everything under `internal/` can change shape between releases without that counting as a breaking change.
 
 ## Docker
 

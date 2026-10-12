@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/config"
-	"agentforge/internal/provider"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 // --- hand-rolled SSE frame parsing ---

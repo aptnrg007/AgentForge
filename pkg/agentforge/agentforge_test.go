@@ -12,12 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/config"
-	"agentforge/internal/mcp"
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
-	"agentforge/internal/provider/replay"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider/replay"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 const testAgentYAML = `name: test-agent

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/config"
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 const testAgentYAML = `name: test-agent

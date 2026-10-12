@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 const defaultOllamaBaseURL = "http://localhost:11434"

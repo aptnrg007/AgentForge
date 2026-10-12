@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // These mirror the JSON shapes internal/api's handlers produce. They're

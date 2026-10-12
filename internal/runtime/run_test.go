@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // TestEngineRunStepsToCompletion confirms Run — the shared core the CLI

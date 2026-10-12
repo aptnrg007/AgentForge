@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/config"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 const maxBodyBytes = 1 << 20 // 1MiB

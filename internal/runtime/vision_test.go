@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // TestStepToolsPrefersExecuteRichOverExecute pins the precedence stepTools

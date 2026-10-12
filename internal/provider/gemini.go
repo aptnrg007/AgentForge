@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 const (

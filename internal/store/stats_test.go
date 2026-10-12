@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 func TestStatsAggregatesAcrossRunStatesToolsAndTokens(t *testing.T) {

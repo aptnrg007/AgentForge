@@ -8,15 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/config"
-	"agentforge/internal/mcp"
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
-	"agentforge/internal/provider/replay"
-	"agentforge/internal/runtime"
-	"agentforge/internal/schema"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider/replay"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 // Mode selects where a Case's model responses come from.

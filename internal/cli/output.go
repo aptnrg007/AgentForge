@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentforge/internal/message"
-	"agentforge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/schema"
 )
 
 // outputOptions controls how a driven run's outcome is rendered. The zero

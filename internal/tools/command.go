@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agentforge/internal/config"
-	"agentforge/internal/runtime"
-	"agentforge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/schema"
 )
 
 // minimalEnvVars are copied from the daemon's own environment into every

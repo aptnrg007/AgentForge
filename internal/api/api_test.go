@@ -14,13 +14,13 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/config"
-	"agentforge/internal/mcp"
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 func discardLogger() *slog.Logger {

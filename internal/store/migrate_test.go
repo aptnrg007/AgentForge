@@ -8,7 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // v1SchemaSQL is schema.sql as it existed before schema_version 2 added

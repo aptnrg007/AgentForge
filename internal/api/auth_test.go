@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/mcp"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 func newAuthTestServer(t *testing.T, authToken string) *httptest.Server {

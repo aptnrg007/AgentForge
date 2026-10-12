@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          check-latest: true
+
+      # CGO_ENABLED=0 is what makes this a genuinely static, single-file
+      # binary (modernc.org/sqlite is pure Go, no cgo — see README's
+      # "Building" section) that cross-compiles for darwin from an
+      # ubuntu-latest runner with no C toolchain involved at all.
+      #
+      # -X sets internal/cli's version/commit/date vars (see
+      # internal/cli/version.go) — GITHUB_REF_NAME is the tag itself
+      # (e.g. "v0.1.0") since this only triggers on a tag push.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -eux
+          version="${GITHUB_REF_NAME}"
+          commit="$(git rev-parse --short HEAD)"
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          pkg="github.com/aptnrg007/AgentForge/internal/cli"
+          name="agentforge_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "dist/${name}"
+          go build -ldflags "-X ${pkg}.version=${version} -X ${pkg}.commit=${commit} -X ${pkg}.date=${date}" \
+            -o "dist/${name}/agentforge" ./cmd/agentforge
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentforge_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          retention-days: 7
+
+  publish:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # No third-party release action: ubuntu-latest ships `gh` already,
+      # and the automatic GITHUB_TOKEN (scoped to this repo, via the
+      # `contents: write` permission above) is all `gh release` needs —
+      # same minimal-dependency approach as the rest of this repo's CI.
+      - name: Create release and attach binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz --title "${GITHUB_REF_NAME}" --generate-notes

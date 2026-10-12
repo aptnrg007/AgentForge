@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"agentforge/internal/message"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 // chatMode tracks what the REPL is waiting on. It's distinct from

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // newTestOpenAI points an OpenAI provider at an httptest.Server running

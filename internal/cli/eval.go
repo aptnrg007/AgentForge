@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentforge/internal/eval"
+	"github.com/aptnrg007/AgentForge/internal/eval"
 )
 
 func newEvalCmd() *cobra.Command {

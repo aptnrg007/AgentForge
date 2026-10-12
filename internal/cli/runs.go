@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/mcp"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 func newRunsCmd() *cobra.Command {

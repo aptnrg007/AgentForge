@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // toolUseMsg + toolResultMsg build one assistant/tool_result pair — the

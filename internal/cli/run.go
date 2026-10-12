@@ -14,12 +14,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/config"
-	"agentforge/internal/mcp"
-	"agentforge/internal/message"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 func newRunCmd() *cobra.Command {

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // defaultOpenAIBaseURL includes the version segment ("/v1"), unlike

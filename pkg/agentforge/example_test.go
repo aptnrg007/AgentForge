@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"agentforge/pkg/agentforge"
+	"github.com/aptnrg007/AgentForge/pkg/agentforge"
 )
 
 // Example mirrors the package doc's usage sample verbatim — compiled

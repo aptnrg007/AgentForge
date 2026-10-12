@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 func newAgentsCmd() *cobra.Command {

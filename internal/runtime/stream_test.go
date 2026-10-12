@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // deltaStream yields a fixed sequence of text deltas before completing

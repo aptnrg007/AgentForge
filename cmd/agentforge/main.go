@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"agentforge/internal/cli"
+	"github.com/aptnrg007/AgentForge/internal/cli"
 )
 
 func main() {

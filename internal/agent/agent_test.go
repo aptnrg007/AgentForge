@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"agentforge/internal/config"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 func TestDefaultProviderFactory(t *testing.T) {

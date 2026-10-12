@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // storySpecValidate is a hand-written stand-in for the closure

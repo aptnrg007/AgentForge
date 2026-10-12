@@ -7,9 +7,9 @@ import (
 	"io"
 	"net/http"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/config"
-	"agentforge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
 )
 
 // handleStreamAgent behaves like handleRunAgent but reports progress over

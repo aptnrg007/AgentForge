@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // responseHeaderTimeout bounds how long a provider's HTTP client waits

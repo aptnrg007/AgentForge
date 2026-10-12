@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/eval"
+	"github.com/aptnrg007/AgentForge/internal/eval"
 )
 
 func writeEvalFile(t *testing.T, path, content string) {

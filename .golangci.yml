@@ -34,10 +34,10 @@ linters:
         # so errcheck needs each one spelled out.
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
-        - (*agentforge/internal/store.Store).Close
-        - (*agentforge/internal/mcp.Registry).Close
-        - (agentforge/internal/provider.Stream).Close
-        - (*agentforge/pkg/agentforge.Agent).Close
+        - (*github.com/aptnrg007/AgentForge/internal/store.Store).Close
+        - (*github.com/aptnrg007/AgentForge/internal/mcp.Registry).Close
+        - (github.com/aptnrg007/AgentForge/internal/provider.Stream).Close
+        - (*github.com/aptnrg007/AgentForge/pkg/agentforge.Agent).Close
 
   exclusions:
     rules:

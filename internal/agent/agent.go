@@ -12,13 +12,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"agentforge/internal/config"
-	"agentforge/internal/mcp"
-	"agentforge/internal/provider"
-	"agentforge/internal/runtime"
-	"agentforge/internal/schema"
-	"agentforge/internal/store"
-	"agentforge/internal/tools"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/tools"
 )
 
 const (

@@ -30,10 +30,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"agentforge/internal/agent"
-	"agentforge/internal/config"
-	"agentforge/internal/mcp"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/agent"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/mcp"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 // Agent is a loaded agent config, ready to run. It owns a local SQLite

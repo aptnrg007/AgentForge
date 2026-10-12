@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/config"
 )
 
 func mustBuildOneWithSourceDir(t *testing.T, def config.ToolDefinition, sourceDir string) func(ctx context.Context, input json.RawMessage) (string, error) {

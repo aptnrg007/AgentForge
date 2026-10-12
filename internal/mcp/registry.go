@@ -10,8 +10,8 @@ import (
 	"sort"
 	"sync"
 
-	"agentforge/internal/message"
-	"agentforge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
 )
 
 // Registry supervises every MCP server a process talks to, deduplicating

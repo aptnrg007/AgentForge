@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"agentforge/internal/config"
-	"agentforge/internal/runtime"
-	"agentforge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/schema"
 )
 
 // httpToolClient bounds how long an http:-backed tool_definition waits

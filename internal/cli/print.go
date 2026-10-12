@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"agentforge/internal/message"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 // printMessages writes msgs to w. Takes an io.Writer (rather than always

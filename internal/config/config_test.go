@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
 )
 
 func TestLoadMinimalExample(t *testing.T) {

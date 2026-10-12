@@ -3,8 +3,8 @@ package api
 import (
 	"encoding/json"
 
-	"agentforge/internal/message"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 type agentSummary struct {

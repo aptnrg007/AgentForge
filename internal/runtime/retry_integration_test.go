@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // flakyAnthropicServer serves a fixed sequence of HTTP status codes, then

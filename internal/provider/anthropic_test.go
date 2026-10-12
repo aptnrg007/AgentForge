@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // --- translation unit tests (no HTTP) ---

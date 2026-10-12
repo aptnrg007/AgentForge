@@ -1,6 +1,6 @@
 package provider
 
-import "agentforge/internal/message"
+import "github.com/aptnrg007/AgentForge/internal/message"
 
 // Stream is a pull-based iterator over an in-progress model response. The
 // caller drives it:

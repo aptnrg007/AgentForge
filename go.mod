@@ -1,4 +1,4 @@
-module agentforge
+module github.com/aptnrg007/AgentForge
 
 go 1.25.0
 

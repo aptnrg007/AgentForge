@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentforge/internal/message"
-	"agentforge/internal/runtime"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 // TestRunsCancelStopsNonTerminalRun exercises runsCancel's local-store

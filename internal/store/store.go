@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 //go:embed schema.sql

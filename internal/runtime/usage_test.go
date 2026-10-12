@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // slowFakeProvider wraps fakeProvider's single-response reply with an

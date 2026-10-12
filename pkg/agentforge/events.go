@@ -1,6 +1,6 @@
 package agentforge
 
-import "agentforge/internal/runtime"
+import "github.com/aptnrg007/AgentForge/internal/runtime"
 
 // Event is a fine-grained progress notification from a running turn — a
 // token of assistant text, a tool call being made, or a tool call's

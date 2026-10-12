@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/provider"
 )
 
 // TestCancelMovesEveryNonTerminalStateToCancelled proves Engine.Cancel

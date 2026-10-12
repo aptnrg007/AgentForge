@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/config"
-	"agentforge/internal/provider"
-	"agentforge/internal/runtime"
+	"github.com/aptnrg007/AgentForge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/runtime"
 )
 
 func TestRetryPolicyDefaults(t *testing.T) {

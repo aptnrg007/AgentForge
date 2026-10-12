@@ -8,7 +8,7 @@ import (
 	"text/template"
 	"time"
 
-	"agentforge/internal/schema"
+	"github.com/aptnrg007/AgentForge/internal/schema"
 )
 
 func (c *Config) validate() error {

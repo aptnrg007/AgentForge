@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentforge/internal/config"
+	"github.com/aptnrg007/AgentForge/internal/config"
 )
 
 func mustBuildOne(t *testing.T, def config.ToolDefinition) func(ctx context.Context, input json.RawMessage) (string, error) {

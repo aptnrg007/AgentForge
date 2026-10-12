@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"agentforge/internal/message"
-	"agentforge/internal/provider"
-	"agentforge/internal/store"
+	"github.com/aptnrg007/AgentForge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/provider"
+	"github.com/aptnrg007/AgentForge/internal/store"
 )
 
 type State string

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agentforge/internal/message"
+	"github.com/aptnrg007/AgentForge/internal/message"
 )
 
 // newTestOllama points an Ollama provider at an httptest.Server running

@@ -19,9 +19,11 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "agentforge",
 		Short:         "YAML in, agent out. MCP tools, runs on your own hardware.",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.SetVersionTemplate(versionString())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newChatCmd())
